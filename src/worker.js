@@ -206,8 +206,50 @@ async function api(request,env){
     const skills=await env.DB.prepare(`SELECT COALESCE(s.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(*) questions FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills s ON s.id=q.skill_id JOIN exam_attempts ea ON ea.id=a.attempt_id WHERE ea.user_id=? AND ea.status='submitted' GROUP BY q.skill_id ORDER BY percentage ASC`).bind(u.id).all();
     return json({student:u,results:results.results||[],skills:skills.results||[]});
   }
+  if(m==='GET'&&p.match(/^\/api\/parent\/[A-Fa-f0-9]{32,128}\/messages$/)){
+    const token=p.split('/')[3];
+    const u=await env.DB.prepare('SELECT id,student_id,full_name FROM users WHERE parent_access_token=? AND status=\'active\'').bind(token).first();
+    if(!u)return bad('Parent link is invalid or expired',404);
+    await env.DB.prepare("UPDATE parent_messages SET read_at=CURRENT_TIMESTAMP WHERE student_id=? AND sender_type='teacher' AND read_at IS NULL").bind(u.id).run();
+    const rows=await env.DB.prepare('SELECT id,sender_type,message,created_at,read_at FROM parent_messages WHERE student_id=? ORDER BY id ASC').bind(u.id).all();
+    return json({student:u,messages:rows.results||[]});
+  }
+  if(m==='POST'&&p.match(/^\/api\/parent\/[A-Fa-f0-9]{32,128}\/messages$/)){
+    const token=p.split('/')[3],b=await body(request),message=clean(b?.message,2000);
+    const u=await env.DB.prepare('SELECT id FROM users WHERE parent_access_token=? AND status=\'active\'').bind(token).first();
+    if(!u)return bad('Parent link is invalid or expired',404);
+    if(!message)return bad('Message is required');
+    const r=await env.DB.prepare("INSERT INTO parent_messages(student_id,sender_type,message) VALUES(?, 'parent', ?)").bind(u.id,message).run();
+    return json({ok:true,id:r.meta.last_row_id},201);
+  }
 
   if(adminSession(s)){
+    if(m==='GET'&&p==='/api/admin/parent-messages'){
+      const rows=await env.DB.prepare(`SELECT u.id student_id,u.student_id,u.full_name,u.grade_level,u.group_id,g.name group_name,
+        (SELECT pm.message FROM parent_messages pm WHERE pm.student_id=u.id ORDER BY pm.id DESC LIMIT 1) last_message,
+        (SELECT pm.created_at FROM parent_messages pm WHERE pm.student_id=u.id ORDER BY pm.id DESC LIMIT 1) last_message_at,
+        (SELECT COUNT(*) FROM parent_messages pm WHERE pm.student_id=u.id AND pm.sender_type='parent' AND pm.read_at IS NULL) unread
+        FROM users u LEFT JOIN groups g ON g.id=u.group_id
+        WHERE EXISTS(SELECT 1 FROM parent_messages pm WHERE pm.student_id=u.id)
+        ORDER BY COALESCE(last_message_at,'') DESC, u.full_name`).all();
+      return json(rows.results||[]);
+    }
+    if(m==='GET'&&p.match(/^\/api\/admin\/parent-messages\/\d+$/)){
+      const studentId=idNum(p.split('/')[3]);if(!studentId)return bad('Invalid student');
+      const u=await env.DB.prepare('SELECT id,student_id,full_name,email,phone,education_system,grade_level,group_id FROM users WHERE id=?').bind(studentId).first();
+      if(!u)return bad('Student not found',404);
+      await env.DB.prepare("UPDATE parent_messages SET read_at=CURRENT_TIMESTAMP WHERE student_id=? AND sender_type='parent' AND read_at IS NULL").bind(studentId).run();
+      const rows=await env.DB.prepare('SELECT id,sender_type,message,created_at,read_at FROM parent_messages WHERE student_id=? ORDER BY id ASC').bind(studentId).all();
+      return json({student:u,messages:rows.results||[]});
+    }
+    if(m==='POST'&&p.match(/^\/api\/admin\/parent-messages\/\d+$/)){
+      const studentId=idNum(p.split('/')[3]),b=await body(request),message=clean(b?.message,2000);
+      if(!studentId)return bad('Invalid student');
+      if(!message)return bad('Message is required');
+      const u=await env.DB.prepare('SELECT id FROM users WHERE id=?').bind(studentId).first();if(!u)return bad('Student not found',404);
+      const r=await env.DB.prepare("INSERT INTO parent_messages(student_id,sender_type,message,admin_user_id) VALUES(?, 'teacher', ?, ?)").bind(studentId,message,s.admin_user_id).run();
+      return json({ok:true,id:r.meta.last_row_id},201);
+    }
     if(m==='GET'&&p==='/api/admin/stats'){
       const [u,e,a,r,p]=await Promise.all(['SELECT COUNT(*) c FROM users','SELECT COUNT(*) c FROM exams','SELECT COUNT(*) c FROM exam_attempts','SELECT AVG(percentage) avg FROM results','SELECT COALESCE(SUM(passed),0) passed,COUNT(*) total FROM results'].map(x=>env.DB.prepare(x).first()));return json({students:Number(u.c),exams:Number(e.c),attempts:Number(a.c),averagePercentage:Number(r.avg||0),passRate:Number(p.total?100*p.passed/p.total:0)});
     }
