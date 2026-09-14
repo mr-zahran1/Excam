@@ -282,7 +282,7 @@ async function api(request,env){
       const u=await env.DB.prepare('SELECT id,parent_access_token FROM users WHERE id=?').bind(id).first();if(!u)return bad('Student not found',404);
       let token=u.parent_access_token;
       if(!token){token=randomHex(32);await env.DB.prepare('UPDATE users SET parent_access_token=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(token,id).run();}
-      return json({ok:true,token,url:new URL(`/parent/${token}`,request.url).toString()});
+      return json({ok:true,token,url:new URL(`/?parent=${encodeURIComponent(token)}`,request.url).toString()});
     }
     if(m==='GET'&&p.match(/^\/api\/admin\/groups\/\d+$/)){
       const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid group');
