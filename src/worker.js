@@ -178,12 +178,31 @@ async function api(request,env){
 
       const percentage=total>0?(score/total)*100:0;
       const passed=percentage>=Number(a.passing_percentage)?1:0;
+      // Build the skill report, but never let a missing/legacy skills table block exam submission.
       let skillBreakdown=[];
-      if(skillTotals.size){const ids=[...skillTotals.keys()];const placeholders=ids.map(()=>'?').join(',');const sr=await env.DB.prepare(`SELECT id,name FROM skills WHERE id IN (${placeholders})`).bind(...ids).all();const names=new Map((sr.results||[]).map(x=>[Number(x.id),x.name]));skillBreakdown=[...skillTotals.entries()].map(([id,x])=>({skill:names.get(id)||'Skill',percentage:x.points?Number((x.earned/x.points*100).toFixed(1)):0,questions:x.questions})).sort((x,y)=>x.percentage-y.percentage)}
+      if(skillTotals.size){
+        try{
+          const ids=[...skillTotals.keys()];
+          const placeholders=ids.map(()=>'?').join(',');
+          const sr=await env.DB.prepare(`SELECT id,name FROM skills WHERE id IN (${placeholders})`).bind(...ids).all();
+          const names=new Map((sr.results||[]).map(x=>[Number(x.id),x.name]));
+          skillBreakdown=[...skillTotals.entries()].map(([skillId,x])=>({skill:names.get(skillId)||'Skill',percentage:x.points?Number((x.earned/x.points*100).toFixed(1)):0,questions:x.questions})).sort((x,y)=>x.percentage-y.percentage);
+        }catch(skillError){
+          console.error('SKILL REPORT ERROR:',skillError?.message||skillError);
+          skillBreakdown=[];
+        }
+      }
 
       await env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
 
-      await env.DB.prepare(`INSERT INTO results(attempt_id,user_id,exam_id,score,total_points,percentage,passed) VALUES(?,?,?,?,?,?,?) ON CONFLICT(attempt_id) DO UPDATE SET score=excluded.score,total_points=excluded.total_points,percentage=excluded.percentage,passed=excluded.passed`).bind(id,s.user_id,a.exam_id,score,total,percentage,passed).run();
+      // Avoid relying on an ON CONFLICT target in case the live D1 database was created
+      // from an older schema. The attempt_id is still unique in the current schema.
+      const existingResult=await env.DB.prepare(`SELECT id FROM results WHERE attempt_id=? LIMIT 1`).bind(id).first();
+      if(existingResult){
+        await env.DB.prepare(`UPDATE results SET user_id=?,exam_id=?,score=?,total_points=?,percentage=?,passed=? WHERE id=?`).bind(s.user_id,a.exam_id,score,total,percentage,passed,existingResult.id).run();
+      }else{
+        await env.DB.prepare(`INSERT INTO results(attempt_id,user_id,exam_id,score,total_points,percentage,passed) VALUES(?,?,?,?,?,?,?)`).bind(id,s.user_id,a.exam_id,score,total,percentage,passed).run();
+      }
 
       return json({ok:true,result:{score,totalPoints:total,percentage,passed,examTitle:a.title,examId:a.exam_id,passingPercentage:Number(a.passing_percentage),questionCount:qs.length,answeredCount:[...incoming.values()].filter(Boolean).length,submittedAt:new Date().toISOString(),skillBreakdown}});
     }catch(e){
