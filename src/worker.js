@@ -173,7 +173,12 @@ async function api(request,env){
         score+=earned;
         if(q.skill_id){const key=Number(q.skill_id);const cur=skillTotals.get(key)||{points:0,earned:0,questions:0};cur.points+=points;cur.earned+=earned;cur.questions++;skillTotals.set(key,cur)}
 
-        await env.DB.prepare(`INSERT INTO answers(attempt_id,question_id,selected_answer,is_correct,points_earned) VALUES(?,?,?,?,?) ON CONFLICT(attempt_id,question_id) DO UPDATE SET selected_answer=excluded.selected_answer,is_correct=excluded.is_correct,points_earned=excluded.points_earned`).bind(id,q.id,selected,correct?1:0,earned).run();
+        // Update first, then insert. This works with older D1 schemas that do not
+        // have a UNIQUE(attempt_id, question_id) constraint for ON CONFLICT.
+        const answerUpdate=await env.DB.prepare(`UPDATE answers SET selected_answer=?,is_correct=?,points_earned=? WHERE attempt_id=? AND question_id=?`).bind(selected,correct?1:0,earned,id,q.id).run();
+        if(Number(answerUpdate?.meta?.changes||0)===0){
+          await env.DB.prepare(`INSERT INTO answers(attempt_id,question_id,selected_answer,is_correct,points_earned) VALUES(?,?,?,?,?)`).bind(id,q.id,selected,correct?1:0,earned).run();
+        }
       }
 
       const percentage=total>0?(score/total)*100:0;
@@ -193,16 +198,17 @@ async function api(request,env){
         }
       }
 
-      await env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
-
-      // Avoid relying on an ON CONFLICT target in case the live D1 database was created
-      // from an older schema. The attempt_id is still unique in the current schema.
+      // Save the result before closing the attempt. If result persistence fails,
+      // the attempt remains retryable instead of being locked as submitted.
       const existingResult=await env.DB.prepare(`SELECT id FROM results WHERE attempt_id=? LIMIT 1`).bind(id).first();
       if(existingResult){
         await env.DB.prepare(`UPDATE results SET user_id=?,exam_id=?,score=?,total_points=?,percentage=?,passed=? WHERE id=?`).bind(s.user_id,a.exam_id,score,total,percentage,passed,existingResult.id).run();
       }else{
         await env.DB.prepare(`INSERT INTO results(attempt_id,user_id,exam_id,score,total_points,percentage,passed) VALUES(?,?,?,?,?,?,?)`).bind(id,s.user_id,a.exam_id,score,total,percentage,passed).run();
       }
+
+      // Mark the attempt submitted only after answers and result are persisted.
+      await env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
 
       return json({ok:true,result:{score,totalPoints:total,percentage,passed,examTitle:a.title,examId:a.exam_id,passingPercentage:Number(a.passing_percentage),questionCount:qs.length,answeredCount:[...incoming.values()].filter(Boolean).length,submittedAt:new Date().toISOString(),skillBreakdown}});
     }catch(e){
