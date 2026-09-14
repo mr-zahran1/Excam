@@ -225,7 +225,7 @@ async function api(request,env){
 
   if(adminSession(s)){
     if(m==='GET'&&p==='/api/admin/parent-messages'){
-      const rows=await env.DB.prepare(`SELECT u.id student_id,u.student_id,u.full_name,u.grade_level,u.group_id,g.name group_name,
+      const rows=await env.DB.prepare(`SELECT u.id AS student_pk,u.student_id,u.full_name,u.grade_level,u.group_id,g.name group_name,
         (SELECT pm.message FROM parent_messages pm WHERE pm.student_id=u.id ORDER BY pm.id DESC LIMIT 1) last_message,
         (SELECT pm.created_at FROM parent_messages pm WHERE pm.student_id=u.id ORDER BY pm.id DESC LIMIT 1) last_message_at,
         (SELECT COUNT(*) FROM parent_messages pm WHERE pm.student_id=u.id AND pm.sender_type='parent' AND pm.read_at IS NULL) unread
