@@ -234,19 +234,28 @@ async function api(request,env){
         ORDER BY COALESCE(last_message_at,'') DESC, u.full_name`).all();
       return json(rows.results||[]);
     }
-    if(m==='GET'&&p.match(/^\/api\/admin\/parent-messages\/\d+$/)){
-      const studentId=idNum(p.split('/')[3]);if(!studentId)return bad('Invalid student');
-      const u=await env.DB.prepare('SELECT id,student_id,full_name,email,phone,education_system,grade_level,group_id FROM users WHERE id=?').bind(studentId).first();
+    if(m==='GET'&&p.match(/^\/api\/admin\/parent-messages\/[^/]+$/)){
+      const key=decodeURIComponent(p.split('/')[4]||'');
+      const numericId=idNum(key);
+      const u=numericId
+        ? await env.DB.prepare('SELECT id,student_id,full_name,email,phone,education_system,grade_level,group_id FROM users WHERE id=?').bind(numericId).first()
+        : await env.DB.prepare('SELECT id,student_id,full_name,email,phone,education_system,grade_level,group_id FROM users WHERE student_id=?').bind(key).first();
       if(!u)return bad('Student not found',404);
+      const studentId=Number(u.id);
       await env.DB.prepare("UPDATE parent_messages SET read_at=CURRENT_TIMESTAMP WHERE student_id=? AND sender_type='parent' AND read_at IS NULL").bind(studentId).run();
       const rows=await env.DB.prepare('SELECT id,sender_type,message,created_at,read_at FROM parent_messages WHERE student_id=? ORDER BY id ASC').bind(studentId).all();
       return json({student:u,messages:rows.results||[]});
     }
-    if(m==='POST'&&p.match(/^\/api\/admin\/parent-messages\/\d+$/)){
-      const studentId=idNum(p.split('/')[3]),b=await body(request),message=clean(b?.message,2000);
-      if(!studentId)return bad('Invalid student');
+    if(m==='POST'&&p.match(/^\/api\/admin\/parent-messages\/[^/]+$/)){
+      const key=decodeURIComponent(p.split('/')[4]||''),b=await body(request),message=clean(b?.message,2000);
+      if(!key)return bad('Invalid student');
       if(!message)return bad('Message is required');
-      const u=await env.DB.prepare('SELECT id FROM users WHERE id=?').bind(studentId).first();if(!u)return bad('Student not found',404);
+      const numericId=idNum(key);
+      const u=numericId
+        ? await env.DB.prepare('SELECT id FROM users WHERE id=?').bind(numericId).first()
+        : await env.DB.prepare('SELECT id FROM users WHERE student_id=?').bind(key).first();
+      if(!u)return bad('Student not found',404);
+      const studentId=Number(u.id);
       const r=await env.DB.prepare("INSERT INTO parent_messages(student_id,sender_type,message,admin_user_id) VALUES(?, 'teacher', ?, ?)").bind(studentId,message,s.admin_user_id).run();
       return json({ok:true,id:r.meta.last_row_id},201);
     }
