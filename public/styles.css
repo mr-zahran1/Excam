@@ -150,3 +150,13 @@ body.dark-mode{background:#07111f;color:#edf5ff}body.dark-mode .topbar{backgroun
 .top-actions>.btn{border-radius:999px;padding:11px 18px}
 .footer{border-top:1px solid var(--line);background:transparent;text-align:center;padding:24px 5vw}
 @media(max-width:620px){.topbar{height:70px;padding:10px 4vw}.brand-mark{width:34px;height:34px}.brand-name{font-size:14px}.brand-name small{font-size:8px}.top-actions>.btn{display:none}}
+
+
+/* Final visual cleanup: clean, calm site background without decorative radial gradients. */
+html, body { background: #f6f8fc !important; }
+body { background-image: none !important; }
+.public-home { background: transparent; }
+.public-hero { background: #ffffff; border: 1px solid #e3eaf3; border-radius: 28px; padding: 42px 42px 48px; box-shadow: 0 18px 55px rgba(25,70,125,.06); }
+.public-teacher { box-shadow: 0 18px 50px rgba(25,70,125,.10); }
+@media(max-width:900px){ .public-hero { padding: 28px; } }
+@media(max-width:620px){ .public-hero { padding: 22px; border-radius: 22px; } }
