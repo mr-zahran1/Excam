@@ -316,6 +316,11 @@ async function api(request,env){
   if(m==='GET'&&p==='/api/results'){
     if(!userSession(s))return bad('Unauthorized',401);const rows=await env.DB.prepare('SELECT r.*,e.title,e.passing_percentage FROM results r JOIN exams e ON e.id=r.exam_id WHERE r.user_id=? ORDER BY r.created_at DESC').bind(s.user_id).all();return json(rows.results||[]);
   }
+  if(m==='GET'&&p==='/api/student/analytics'){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const skills=await env.DB.prepare(`SELECT COALESCE(sk.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(*) questions FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills sk ON sk.id=q.skill_id JOIN exam_attempts ea ON ea.id=a.attempt_id WHERE ea.user_id=? AND ea.status='submitted' GROUP BY q.skill_id ORDER BY percentage ASC`).bind(s.user_id).all();
+    return json({skills:skills.results||[]});
+  }
 
   if(adminSession(s)){
     if(m==='GET'&&p==='/api/admin/stats'){
