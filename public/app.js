@@ -1,7 +1,7 @@
 const app=document.getElementById('app'),toast=document.getElementById('toast');
-const uiObserver=new MutationObserver(()=>{if(state.lang==='ar')requestAnimationFrame(translateUI)});uiObserver.observe(app,{childList:true,subtree:true});
 const isAdminPortal=()=>location.pathname==='/admin'||location.pathname==='/admin/'||location.pathname==='/admin.html';
 const state={me:null,view:'home',exam:null,questions:[],attemptId:null,timer:null,answers:{},submitting:false,expired:false,currentQuestion:0,reviewMode:false,skippedQuestions:[],chatTimer:null,adminTab:'overview',adminGrade:localStorage.getItem('admin_grade')||'all',editingExam:null,editingQuestion:null,lang:localStorage.getItem('exam_lang')||'en',theme:localStorage.getItem('exam_theme')||'light'};
+const uiObserver=new MutationObserver(()=>{if(state.lang==='ar')requestAnimationFrame(translateUI)});uiObserver.observe(app,{childList:true,subtree:true});
 const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 function showToast(msg){toast.textContent=msg;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2600)}
 const translations={
