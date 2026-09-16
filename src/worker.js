@@ -300,6 +300,30 @@ async function api(request,env){
     if(m==='GET'&&p==='/api/admin/students'){
       const q=clean(url.searchParams.get('q'),100),like=`%${q}%`,scope=adminScope(url);const rows=await env.DB.prepare(`SELECT u.id,u.student_id,u.full_name,u.email,u.phone,u.status,u.education_system,u.grade_level,u.group_id,u.created_at,g.name group_name FROM users u LEFT JOIN groups g ON g.id=u.group_id WHERE (u.student_id LIKE ? OR u.full_name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?) AND (?='' OR u.education_system=?) AND (?='' OR u.grade_level=?) ORDER BY u.created_at DESC`).bind(like,like,like,like,scope.system,scope.system,scope.grade,scope.grade).all();return json(rows.results||[]);
     }
+    if(m==='POST'&&p==='/api/admin/students/bulk'){
+      const b=await body(request),items=Array.isArray(b?.students)?b.students:[];
+      if(!items.length||items.length>100)return bad('Provide 1–100 students');
+      const created=[],errors=[],seenEmails=new Set(),seenIds=new Set();
+      for(let i=0;i<items.length;i++){
+        const x=items[i]||{},row=Number(x.row)||i+2,name=clean(x.fullName,120),email=clean(x.email,160).toLowerCase(),phone=clean(x.phone,30),password=String(x.password||''),system=educationSystem(x.educationSystem),grade=cleanGrade(x.grade),groupId=x.groupId?idNum(x.groupId):null;
+        if(!name||!emailOK(email)||!passwordOK(password)||!phoneOK(phone)||!grade){errors.push({row,error:'Full Name, valid Email, Password (8+ characters) and Grade are required.'});continue}
+        if(seenEmails.has(email)){errors.push({row,error:'Duplicate email in this file.'});continue}
+        seenEmails.add(email);
+        let studentId=clean(x.studentId,30).toUpperCase();
+        if(studentId&&!/^STU-[A-Z0-9]{6,12}$/.test(studentId)){errors.push({row,error:'Student ID must look like STU-ABC123456.'});continue}
+        if(studentId&&seenIds.has(studentId)){errors.push({row,error:'Duplicate Student ID in this file.'});continue}
+        if(!studentId){let found=false;for(let tries=0;tries<20;tries++){studentId=`STU-${randomHex(5).slice(0,8).toUpperCase()}`;if(!seenIds.has(studentId)&&!(await env.DB.prepare('SELECT id FROM users WHERE student_id=?').bind(studentId).first())){found=true;break}}if(!found){errors.push({row,error:'Could not generate a unique Student ID.'});continue}}
+        seenIds.add(studentId);
+        const exists=await env.DB.prepare('SELECT id,student_id,email FROM users WHERE student_id=? OR email=?').bind(studentId,email).first();if(exists){errors.push({row,error:'Student ID or email already exists.'});continue}
+        if(groupId){const g=await env.DB.prepare('SELECT id,system,grade FROM groups WHERE id=?').bind(groupId).first();if(!g){errors.push({row,error:'Group not found.'});continue}if(g.system!==system||g.grade!==grade){errors.push({row,error:'Group does not match the student system and grade.'});continue}}
+        try{
+          const ph=await hashPassword(password);
+          const r=await env.DB.prepare('INSERT INTO users(student_id,full_name,email,phone,password_hash,password_salt,education_system,grade_level,group_id) VALUES(?,?,?,?,?,?,?,?,?)').bind(studentId,name,email,phone,ph.hash,ph.salt,system,grade,groupId).run();
+          created.push({row,id:r.meta.last_row_id,studentId,fullName:name,email,grade,system});
+        }catch(err){errors.push({row,error:'Could not create account. Student ID or email may already exist.'})}
+      }
+      return json({ok:true,created:created.length,errors,students:created},errors.length&&created.length===0?400:200);
+    }
     if(m==='POST'&&p==='/api/admin/students'){
       const b=await body(request),name=clean(b?.fullName,120),email=clean(b?.email,160).toLowerCase(),phone=clean(b?.phone,30),password=String(b?.password||''),system=educationSystem(b?.educationSystem),grade=cleanGrade(b?.grade),groupId=b?.groupId? idNum(b.groupId):null;
       if(!name||!emailOK(email)||!passwordOK(password)||!phoneOK(phone)||!grade)return bad('Name, valid email, valid phone, grade and an 8+ character password are required');
