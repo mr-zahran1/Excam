@@ -188,6 +188,15 @@ async function api(request,env){
       if(skillTotals.size){try{const ids=[...skillTotals.keys()];const placeholders=ids.map(()=>'?').join(',');const sr=await env.DB.prepare(`SELECT id,name FROM skills WHERE id IN (${placeholders})`).bind(...ids).all();const names=new Map((sr.results||[]).map(x=>[Number(x.id),x.name]));skillBreakdown=[...skillTotals.entries()].map(([id,x])=>({skill:names.get(id)||'Skill',percentage:x.points?Number((x.earned/x.points*100).toFixed(1)):0,questions:x.questions})).sort((x,y)=>x.percentage-y.percentage)}catch(err){console.error('SKILL BREAKDOWN ERROR:',err?.message||err);skillBreakdown=[]}}
 
       submitStage='mark attempt submitted';
+      // The original schema has UNIQUE(exam_id,user_id,status).
+      // A student is allowed to retake a failed exam, so an older submitted
+      // attempt can collide when the new in-progress attempt is changed to
+      // submitted. Keep the result history, but move the previous attempt
+      // out of the submitted state before closing the new attempt.
+      const previousSubmitted=await env.DB.prepare(`SELECT id FROM exam_attempts WHERE exam_id=? AND user_id=? AND status='submitted' AND id<>? ORDER BY id DESC LIMIT 1`).bind(a.exam_id,s.user_id,id).first();
+      if(previousSubmitted){
+        await env.DB.prepare(`UPDATE exam_attempts SET status='expired' WHERE id=?`).bind(previousSubmitted.id).run();
+      }
       await env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
 
       submitStage='save result';
