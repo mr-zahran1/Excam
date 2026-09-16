@@ -4,6 +4,8 @@ const state={me:null,view:'home',exam:null,questions:[],attemptId:null,timer:nul
 const uiObserver=new MutationObserver(()=>{if(state.lang==='ar')requestAnimationFrame(translateUI)});uiObserver.observe(app,{childList:true,subtree:true});
 const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 function showToast(msg){toast.textContent=msg;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2600)}
+function closeChatModal(){clearInterval(state.chatTimer);state.chatTimer=null;closeModal() }
+function parentOpenChat(studentId,studentName){return parentOpenTeacherChat(studentId,studentName)}
 const translations={
   'Home':'الرئيسية','Exams':'الامتحانات','Results':'النتائج','Student Login':'دخول الطالب','Enter your platform':'ابدأ الآن','Dashboard':'لوحة التحكم','Logout':'تسجيل الخروج',
   'English learning · assessment · progress':'التعلم المالي · التقييم · الأداء','Learn with purpose.':'قيّم ما تعرفه.','See your progress clearly.':'قِس ما يمكنك القيام به.',
