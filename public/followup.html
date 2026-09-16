@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#eef5ff"><title>Student Follow-up</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<style>
+body{background:#f4f7fb}.follow-wrap{max-width:1050px;margin:0 auto;padding:44px 22px 70px}.follow-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px}.follow-brand{font-weight:700;color:#16366b}.follow-card{background:#fff;border:1px solid #dce5f2;border-radius:20px;padding:24px;box-shadow:0 12px 35px rgba(20,50,90,.07)}.follow-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.follow-stat span{display:block;color:#71809a;font-size:13px;margin-bottom:8px}.follow-stat b{font-size:20px;color:#16366b}.follow-table{width:100%;border-collapse:collapse}.follow-table th,.follow-table td{text-align:left;padding:13px 10px;border-bottom:1px solid #e7edf5}.pill.pass{color:#087443}.pill.fail{color:#a33b3b}.skill{margin:16px 0}.skill-top{display:flex;justify-content:space-between;margin-bottom:7px}.bar{height:9px;background:#e9eef6;border-radius:99px;overflow:hidden}.bar span{display:block;height:100%;background:#2563eb;border-radius:99px}.error{color:#a33b3b}.muted{color:#71809a}@media(max-width:700px){.follow-wrap{padding:25px 14px 45px}.follow-grid{grid-template-columns:1fr}.follow-card{padding:18px;overflow:auto}.follow-head{display:block}.follow-table{font-size:13px;min-width:650px}}
+</style>
+</head>
+<body>
+<div id="app"><div class="follow-wrap"><div class="follow-card">Loading student information…</div></div></div>
+<script>
+const app=document.getElementById('app');
+const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const token=decodeURIComponent(location.pathname.split('/')[2]||'');
+const ar=new URLSearchParams(location.search).get('lang')==='ar';
+function pageError(msg){app.innerHTML=`<div class="follow-wrap"><div class="follow-card"><div class="eyebrow">${ar?'متابعة الطالب':'Student Follow-up'}</div><h1>${ar?'تعذر تحميل بيانات الطالب':'Unable to load student data'}</h1><p class="error">${esc(msg)}</p></div></div>`}
+async function load(){
+ if(!token)return pageError(ar?'رابط المتابعة غير صالح.':'Invalid follow-up link.');
+ try{
+  const r=await fetch('/api/follow/'+encodeURIComponent(token),{credentials:'omit'});let d=null;try{d=await r.json()}catch{}
+  if(!r.ok)throw new Error(d?.error||d?.details||'This follow-up link is invalid or no longer active.');
+  const s=d.student||{},results=Array.isArray(d.results)?d.results:[],skills=Array.isArray(d.skills)?d.skills:[];
+  document.documentElement.lang=ar?'ar':'en';document.documentElement.dir=ar?'rtl':'ltr';
+  app.innerHTML=`<div class="follow-wrap">
+   <header class="follow-head"><div><div class="eyebrow">${ar?'متابعة الطالب':'Student Follow-up'}</div><h1>${esc(s.full_name||'Student')}</h1><p class="muted">${esc(s.student_id||'')} · ${esc(s.grade_level||'')} · ${s.education_system==='azhar'?(ar?'أزهري':'Azhar'):(ar?'عام':'General')}</p></div><div class="follow-brand">${ar?'منصة الامتحانات':'Exam Platform'}</div></header>
+   <section class="follow-grid"><div class="follow-card follow-stat"><span>${ar?'الاسم':'Student'}</span><b>${esc(s.full_name||'—')}</b></div><div class="follow-card follow-stat"><span>${ar?'الصف':'Grade'}</span><b>${esc(s.grade_level||'—')}</b></div><div class="follow-card follow-stat"><span>${ar?'المجموعة':'Group'}</span><b>${esc(s.group_name||'—')}</b></div></section>
+   <section class="follow-card" style="margin-top:16px"><div class="eyebrow">${ar?'الامتحانات والنتائج':'Exams & Results'}</div><h2>${ar?'نتائج الطالب':'Student results'}</h2>${results.length?`<table class="follow-table"><thead><tr><th>${ar?'الامتحان':'Exam'}</th><th>${ar?'الدرجة':'Score'}</th><th>%</th><th>${ar?'الحالة':'Status'}</th><th>${ar?'التاريخ':'Date'}</th></tr></thead><tbody>${results.map(r=>`<tr><td><b>${esc(r.title)}</b></td><td>${esc(r.score)} / ${esc(r.total_points)}</td><td>${Number(r.percentage||0).toFixed(1)}%</td><td><span class="pill ${r.passed?'pass':'fail'}">${r.passed?(ar?'ناجح':'Passed'):(ar?'لم ينجح':'Not passed')}</span></td><td>${esc(r.created_at||'')}</td></tr>`).join('')}</tbody></table>`:`<p class="muted">${ar?'لا توجد نتائج مسجلة بعد.':'No exam results yet.'}</p>`}</section>
+   <section class="follow-card" style="margin-top:16px"><div class="eyebrow">${ar?'تحليل المهارات':'Skill Profile'}</div><h2>${ar?'الأداء حسب المهارة':'Performance by skill'}</h2>${skills.length?skills.map(x=>`<div class="skill"><div class="skill-top"><b>${esc(x.skill)}</b><strong>${Number(x.percentage||0).toFixed(1)}%</strong></div><div class="bar"><span style="width:${Math.max(0,Math.min(100,Number(x.percentage)||0))}%"></span></div></div>`).join(''):`<p class="muted">${ar?'لا توجد بيانات مهارات بعد.':'No skill data yet.'}</p>`}</section>
+  </div>`;
+ }catch(e){pageError(e.message)}
+}
+load();
+</script>
+</body></html>
