@@ -174,3 +174,5 @@ body.dark-mode .year-filter,body.dark-mode .group-student-row select{background:
 @media(max-width:700px){.year-filter{align-items:stretch;flex-direction:column}.year-filter select{min-width:0;width:100%}.group-student-row{align-items:stretch;flex-direction:column}.group-student-row .actions{width:100%}.group-student-row select{flex:1;min-width:0}}
 
 .admin-error{max-width:720px;margin-top:10px}.admin-error h2{margin:.35rem 0 .6rem}.admin-error .btn{margin-top:10px}
+
+.parent-page{padding-top:42px}.parent-summary{min-width:170px;display:flex;flex-direction:column;justify-content:center;gap:5px}.parent-summary strong{font-size:38px}.parent-student-card{margin-top:24px}.parent-student-head{display:flex;justify-content:space-between;align-items:start;gap:20px}.parent-student-head h2{margin:5px 0}.parent-student-head small{display:block;color:var(--muted);margin-top:4px}.public-action-row{display:flex;gap:10px;flex-wrap:wrap}@media(max-width:620px){.parent-student-head{display:block}.parent-student-head .pill{margin-top:12px}.parent-summary{min-width:0;margin-top:16px}}

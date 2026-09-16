@@ -51,6 +51,17 @@ async function getSession(request,env){
   await env.DB.prepare('UPDATE sessions SET expires_at=? WHERE id=?').bind(now()+SESSION_DAYS*86400,sid).run();
   return row;
 }
+async function getParentSession(request,env){
+  const sid=request.headers.get('cookie')?.match(/(?:^|; )parent_session=([^;]+)/)?.[1]||null;
+  if(!sid)return null;
+  const row=await env.DB.prepare(`SELECT ps.*,p.username,p.full_name,p.email,p.phone,p.status parent_status FROM parent_sessions ps JOIN parent_accounts p ON p.id=ps.parent_id WHERE ps.id=? AND ps.expires_at>?`).bind(sid,now()).first();
+  if(!row||row.parent_status!=='active')return null;
+  await env.DB.prepare('UPDATE parent_sessions SET expires_at=? WHERE id=?').bind(now()+SESSION_DAYS*86400,sid).run();
+  return row;
+}
+function parentSessionCookie(id){return cookie('parent_session',id,SESSION_DAYS*86400)}
+function clearParentCookie(){return clearCookie('parent_session')}
+function parentSession(s){return !!s?.parent_id}
 function userSession(s){return !!s?.user_id}
 function adminSession(s){return !!s?.admin_user_id}
 async function body(req){try{return await req.json()}catch{return null}}
@@ -62,7 +73,7 @@ async function logout(request,env){const sid=sessionId(request);if(sid)await env
 function adminOnly(s){return adminSession(s)?null:bad('Admin authorization required',403)}
 
 async function api(request,env){
-  const url=new URL(request.url),p=url.pathname,m=request.method,s=await getSession(request,env);
+  const url=new URL(request.url),p=url.pathname,m=request.method,s=await getSession(request,env),ps=await getParentSession(request,env);
   if(!originOK(request))return bad('Invalid request origin',403);
 
   if(m==='POST'&&p==='/api/setup/admin'){
@@ -84,13 +95,24 @@ async function api(request,env){
     const u=await env.DB.prepare('SELECT * FROM users WHERE lower(student_id)=? OR lower(email)=?').bind(ident,ident).first();if(!u||u.status!=='active'||!(await verifyPassword(b.password,u.password_hash,u.password_salt)))return bad('Invalid credentials',401);
     const sid=await createSession(env,'user',u.id,request);return json({ok:true,user:{studentId:u.student_id,fullName:u.full_name,email:u.email}},200,{'set-cookie':sessionCookie(sid)});
   }
+  if(m==='POST'&&p==='/api/parent/login'){
+    const b=await body(request),username=clean(b?.username,80).toLowerCase();if(!username||!passwordOK(b?.password))return bad('Username and password are required');
+    const parent=await env.DB.prepare('SELECT * FROM parent_accounts WHERE lower(username)=?').bind(username).first();
+    if(!parent||parent.status!=='active'||!(await verifyPassword(b.password,parent.password_hash,parent.password_salt)))return bad('Invalid parent credentials',401);
+    const sid=randomHex(32);await env.DB.prepare('INSERT INTO parent_sessions(id,parent_id,expires_at,created_at,user_agent) VALUES(?,?,?,?,?)').bind(sid,parent.id,now()+SESSION_DAYS*86400,now(),clean(request.headers.get('user-agent'),500)).run();
+    return json({ok:true,parent:{username:parent.username,fullName:parent.full_name}},200,{'set-cookie':parentSessionCookie(sid)});
+  }
   if(m==='POST'&&p==='/api/admin/login'){
     const b=await body(request),username=clean(b?.username,80).toLowerCase();if(!username||!passwordOK(b?.password))return bad('Username and password are required');
     const a=await env.DB.prepare('SELECT * FROM admin_users WHERE lower(username)=?').bind(username).first();if(!a||a.status!=='active'||!(await verifyPassword(b.password,a.password_hash,a.password_salt)))return bad('Invalid admin credentials',401);
     const sid=await createSession(env,'admin',a.id,request);return json({ok:true,admin:{username:a.username,role:a.role}},200,{'set-cookie':sessionCookie(sid)});
   }
-  if(m==='POST'&&p==='/api/auth/logout')return logout(request,env);
-  if(m==='GET'&&p==='/api/auth/me')return json({authenticated:!!s,user:userSession(s)?{studentId:s.student_id,fullName:s.full_name,email:s.email,phone:s.phone,educationSystem:s.education_system||'general',grade:s.grade_level||'',groupId:s.group_id||null}:null,admin:adminSession(s)?{username:s.username,role:s.role}:null});
+  if(m==='POST'&&p==='/api/auth/logout'){
+    const sid=request.headers.get('cookie')?.match(/(?:^|; )parent_session=([^;]+)/)?.[1]||null;
+    if(sid)await env.DB.prepare('DELETE FROM parent_sessions WHERE id=?').bind(sid).run();
+    const base=await logout(request,env);return new Response(null,{status:204,headers:{'set-cookie':`${clearCookie(SESSION_COOKIE)}, ${clearParentCookie()}`}});
+  }
+  if(m==='GET'&&p==='/api/auth/me')return json({authenticated:!!s||!!ps,user:userSession(s)?{studentId:s.student_id,fullName:s.full_name,email:s.email,phone:s.phone,educationSystem:s.education_system||'general',grade:s.grade_level||'',groupId:s.group_id||null}:null,admin:adminSession(s)?{username:s.username,role:s.role}:null,parent:parentSession(ps)?{username:ps.username,fullName:ps.full_name,email:ps.email,phone:ps.phone}:null});
 
   if(m==='GET'&&p==='/api/exams'){
     if(!userSession(s)&&!adminSession(s))return bad('Unauthorized',401);
@@ -214,6 +236,17 @@ async function api(request,env){
     }
   }
 
+  if(m==='GET'&&p==='/api/parent/dashboard'){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const links=await env.DB.prepare(`SELECT u.id,u.student_id,u.full_name,u.email,u.phone,u.grade_level,u.education_system,g.name group_name FROM parent_students x JOIN users u ON u.id=x.student_id LEFT JOIN groups g ON g.id=u.group_id WHERE x.parent_id=? AND u.status='active' ORDER BY u.full_name`).bind(ps.parent_id).all();
+    const students=[];
+    for(const u of (links.results||[])){
+      const rr=await env.DB.prepare(`SELECT r.id,r.exam_id,r.score,r.total_points,r.percentage,r.passed,r.created_at,e.title FROM results r JOIN exams e ON e.id=r.exam_id WHERE r.user_id=? ORDER BY r.created_at DESC,r.id DESC`).bind(u.id).all();
+      const sk=await env.DB.prepare(`SELECT COALESCE(s.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(*) questions FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills s ON s.id=q.skill_id JOIN results r ON r.attempt_id=a.attempt_id WHERE r.user_id=? GROUP BY q.skill_id ORDER BY percentage ASC`).bind(u.id).all();
+      students.push({...u,results:rr.results||[],skills:sk.results||[]});
+    }
+    return json({parent:{username:ps.username,full_name:ps.full_name},students});
+  }
   if(m==='GET'&&p==='/api/results'){
     if(!userSession(s))return bad('Unauthorized',401);const rows=await env.DB.prepare('SELECT r.*,e.title,e.passing_percentage FROM results r JOIN exams e ON e.id=r.exam_id WHERE r.user_id=? ORDER BY r.created_at DESC').bind(s.user_id).all();return json(rows.results||[]);
   }
@@ -292,6 +325,32 @@ async function api(request,env){
     if(m==='DELETE'&&p.match(/^\/api\/admin\/questions\/\d+$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid question');await env.DB.prepare('DELETE FROM questions WHERE id=?').bind(id).run();return json({ok:true})}
     if(m==='GET'&&p==='/api/admin/results'){const q=clean(url.searchParams.get('q'),100),like=`%${q}%`;const rows=await env.DB.prepare('SELECT r.*,u.student_id,u.full_name,u.email,e.title FROM results r JOIN users u ON u.id=r.user_id JOIN exams e ON e.id=r.exam_id WHERE u.student_id LIKE ? OR u.full_name LIKE ? OR u.email LIKE ? OR e.title LIKE ? ORDER BY r.created_at DESC').bind(like,like,like,like).all();return json(rows.results||[])}
     if(m==='GET'&&p.match(/^\/api\/admin\/results\/\d+$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid result');const r=await env.DB.prepare('SELECT r.*,u.student_id,u.full_name,u.email,e.title,e.passing_percentage FROM results r JOIN users u ON u.id=r.user_id JOIN exams e ON e.id=r.exam_id WHERE r.id=?').bind(id).first();if(!r)return bad('Result not found',404);const answers=await env.DB.prepare('SELECT a.*,q.question_text,q.option_a,q.option_b,q.option_c,q.option_d,q.correct_answer,q.points FROM answers a JOIN questions q ON q.id=a.question_id WHERE a.attempt_id=? ORDER BY q.sort_order,q.id').bind(r.attempt_id).all();return json({result:r,answers:answers.results||[]})}
+    if(m==='GET'&&p==='/api/admin/parents'){
+      const grade=cleanGrade(url.searchParams.get('grade'));
+      const sql=grade?`SELECT p.id,p.username,p.full_name,p.email,p.phone,p.status,p.created_at,(SELECT COUNT(*) FROM parent_students x JOIN users u2 ON u2.id=x.student_id WHERE x.parent_id=p.id) student_count FROM parent_accounts p WHERE EXISTS (SELECT 1 FROM parent_students x2 JOIN users u3 ON u3.id=x2.student_id WHERE x2.parent_id=p.id AND u3.grade_level=?) ORDER BY p.created_at DESC`:`SELECT p.id,p.username,p.full_name,p.email,p.phone,p.status,p.created_at,(SELECT COUNT(*) FROM parent_students x WHERE x.parent_id=p.id) student_count FROM parent_accounts p ORDER BY p.created_at DESC`;
+      const rows=grade?await env.DB.prepare(sql).bind(grade).all():await env.DB.prepare(sql).all();return json(rows.results||[]);
+    }
+    if(m==='POST'&&p==='/api/admin/parents'){
+      const b=await body(request),name=clean(b?.fullName,120),username=clean(b?.username,80).toLowerCase(),email=clean(b?.email,160).toLowerCase(),phone=clean(b?.phone,30),password=String(b?.password||'');
+      if(!name||!/^[a-z0-9._-]{3,80}$/.test(username)||!passwordOK(password)||!phoneOK(phone)||(email&&!emailOK(email)))return bad('Invalid parent fields');
+      if(await env.DB.prepare('SELECT id FROM parent_accounts WHERE username=?').bind(username).first())return bad('Username already exists',409);
+      const ph=await hashPassword(password);const r=await env.DB.prepare('INSERT INTO parent_accounts(username,full_name,email,phone,password_hash,password_salt,status) VALUES(?,?,?,?,?,?,?)').bind(username,name,email,phone,ph.hash,ph.salt,'active').run();return json({id:r.meta.last_row_id},201);
+    }
+    if(m==='GET'&&p.match(/^\/api\/admin\/parents\/\d+$/)){
+      const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid parent');const parent=await env.DB.prepare('SELECT id,username,full_name,email,phone,status,created_at FROM parent_accounts WHERE id=?').bind(id).first();if(!parent)return bad('Parent not found',404);const students=await env.DB.prepare('SELECT u.id,u.student_id,u.full_name,u.email,u.phone,u.grade_level,u.education_system,g.name group_name FROM parent_students x JOIN users u ON u.id=x.student_id LEFT JOIN groups g ON g.id=u.group_id WHERE x.parent_id=? ORDER BY u.full_name').bind(id).all();return json({parent,students:students.results||[]});
+    }
+    if(m==='PUT'&&p.match(/^\/api\/admin\/parents\/\d+$/)){
+      const id=idNum(p.split('/')[4]),b=await body(request),name=clean(b?.fullName,120),email=clean(b?.email,160).toLowerCase(),phone=clean(b?.phone,30);if(!id||!name||!phoneOK(phone)||(email&&!emailOK(email)))return bad('Invalid parent fields');const exists=email?await env.DB.prepare('SELECT id FROM parent_accounts WHERE email=? AND id<>?').bind(email,id).first():null;if(exists)return bad('Email already exists',409);await env.DB.prepare('UPDATE parent_accounts SET full_name=?,email=?,phone=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(name,email,phone,id).run();return json({ok:true});
+    }
+    if(m==='DELETE'&&p.match(/^\/api\/admin\/parents\/\d+$/)){
+      const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid parent');await env.DB.prepare('DELETE FROM parent_accounts WHERE id=?').bind(id).run();return json({ok:true});
+    }
+    if(m==='POST'&&p.match(/^\/api\/admin\/parents\/\d+\/students$/)){
+      const id=idNum(p.split('/')[4]),b=await body(request),key=clean(b?.student,120).toLowerCase();if(!id||!key)return bad('Student ID or email is required');if(!await env.DB.prepare('SELECT id FROM parent_accounts WHERE id=?').bind(id).first())return bad('Parent not found',404);const u=await env.DB.prepare('SELECT id FROM users WHERE lower(student_id)=? OR lower(email)=?').bind(key,key).first();if(!u)return bad('Student not found',404);try{await env.DB.prepare('INSERT INTO parent_students(parent_id,student_id) VALUES(?,?)').bind(id,u.id).run()}catch{return bad('Student is already linked to this parent',409)}return json({ok:true});
+    }
+    if(m==='DELETE'&&p.match(/^\/api\/admin\/parents\/\d+\/students\/\d+$/)){
+      const parentId=idNum(p.split('/')[4]),studentId=idNum(p.split('/')[6]);if(!parentId||!studentId)return bad('Invalid parent or student');await env.DB.prepare('DELETE FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,studentId).run();return json({ok:true});
+    }
     if(m==='GET'&&p==='/api/admin/admins'){if(s.role!=='super_admin')return bad('Super admin required',403);const rows=await env.DB.prepare('SELECT id,username,role,status,created_at FROM admin_users ORDER BY created_at DESC').all();return json(rows.results||[])}
     if(m==='POST'&&p==='/api/admin/admins'){if(s.role!=='super_admin')return bad('Super admin required',403);const b=await body(request),username=clean(b?.username,80).toLowerCase();if(!/^[a-z0-9._-]{3,80}$/.test(username)||!passwordOK(b?.password)||!['admin','super_admin'].includes(b?.role||'admin'))return bad('Invalid admin fields');const exists=await env.DB.prepare('SELECT id FROM admin_users WHERE username=?').bind(username).first();if(exists)return bad('Username already exists',409);const ph=await hashPassword(b.password);const r=await env.DB.prepare('INSERT INTO admin_users(username,password_hash,password_salt,role,status) VALUES(?,?,?,?,?)').bind(username,ph.hash,ph.salt,b.role,'active').run();return json({id:r.meta.last_row_id},201)}
     if(m==='PATCH'&&p.match(/^\/api\/admin\/admins\/\d+$/)){if(s.role!=='super_admin')return bad('Super admin required',403);const id=idNum(p.split('/')[4]),b=await body(request);if(!id||!['active','blocked'].includes(b?.status))return bad('Invalid status');await env.DB.prepare('UPDATE admin_users SET status=? WHERE id=?').bind(b.status,id).run();return json({ok:true})}
