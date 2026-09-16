@@ -168,7 +168,13 @@ async function api(request,env){
         score+=earned;
         if(q.skill_id){const key=Number(q.skill_id);const cur=skillTotals.get(key)||{points:0,earned:0,questions:0};cur.points+=points;cur.earned+=earned;cur.questions++;skillTotals.set(key,cur)}
 
-        await env.DB.prepare(`INSERT INTO answers(attempt_id,question_id,selected_answer,is_correct,points_earned) VALUES(?,?,?,?,?) ON CONFLICT(attempt_id,question_id) DO UPDATE SET selected_answer=excluded.selected_answer,is_correct=excluded.is_correct,points_earned=excluded.points_earned`).bind(id,q.id,selected,correct?1:0,earned).run();
+        // Write the answer without relying on a composite UNIQUE constraint.
+        // This keeps submission compatible with existing D1 databases created before
+        // the latest schema was deployed.
+        const updatedAnswer=await env.DB.prepare(`UPDATE answers SET selected_answer=?,is_correct=?,points_earned=? WHERE attempt_id=? AND question_id=?`).bind(selected,correct?1:0,earned,id,q.id).run();
+        if(!Number(updatedAnswer.meta?.changes||0)){
+          await env.DB.prepare(`INSERT INTO answers(attempt_id,question_id,selected_answer,is_correct,points_earned) VALUES(?,?,?,?,?)`).bind(id,q.id,selected,correct?1:0,earned).run();
+        }
       }
 
       const percentage=total>0?(score/total)*100:0;
@@ -178,7 +184,12 @@ async function api(request,env){
 
       await env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
 
-      await env.DB.prepare(`INSERT INTO results(attempt_id,user_id,exam_id,score,total_points,percentage,passed) VALUES(?,?,?,?,?,?,?) ON CONFLICT(attempt_id) DO UPDATE SET score=excluded.score,total_points=excluded.total_points,percentage=excluded.percentage,passed=excluded.passed`).bind(id,s.user_id,a.exam_id,score,total,percentage,passed).run();
+      // Update an existing result first; insert only when this attempt has no result.
+      // Avoid depending on the attempt_id UNIQUE constraint for older D1 schemas.
+      const updatedResult=await env.DB.prepare(`UPDATE results SET user_id=?,exam_id=?,score=?,total_points=?,percentage=?,passed=? WHERE attempt_id=?`).bind(s.user_id,a.exam_id,score,total,percentage,passed,id).run();
+      if(!Number(updatedResult.meta?.changes||0)){
+        await env.DB.prepare(`INSERT INTO results(attempt_id,user_id,exam_id,score,total_points,percentage,passed) VALUES(?,?,?,?,?,?,?)`).bind(id,s.user_id,a.exam_id,score,total,percentage,passed).run();
+      }
 
       return json({ok:true,result:{score,totalPoints:total,percentage,passed,examTitle:a.title,examId:a.exam_id,passingPercentage:Number(a.passing_percentage),questionCount:qs.length,answeredCount:[...incoming.values()].filter(Boolean).length,submittedAt:new Date().toISOString(),skillBreakdown}});
     }catch(e){
