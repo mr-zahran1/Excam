@@ -172,3 +172,5 @@ body { background-image: none !important; }
 .group-student-row select{min-width:140px;padding:8px 10px;border:1px solid var(--edu-border);border-radius:9px;background:#fff}
 body.dark-mode .year-filter,body.dark-mode .group-student-row select{background:#0c1a2c;border-color:#29496d;color:#edf5ff}
 @media(max-width:700px){.year-filter{align-items:stretch;flex-direction:column}.year-filter select{min-width:0;width:100%}.group-student-row{align-items:stretch;flex-direction:column}.group-student-row .actions{width:100%}.group-student-row select{flex:1;min-width:0}}
+
+.admin-error{max-width:720px;margin-top:10px}.admin-error h2{margin:.35rem 0 .6rem}.admin-error .btn{margin-top:10px}
