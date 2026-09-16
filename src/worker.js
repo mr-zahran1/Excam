@@ -259,22 +259,6 @@ async function api(request,env){
     const qs=await env.DB.prepare(`SELECT id,question_text,option_a,option_b,option_c,option_d,points,sort_order FROM questions WHERE exam_id=? ORDER BY sort_order,id`).bind(examId).all();
     return json({exam,questions:qs.results||[]});
   }
-  if(m==='GET'&&p.match(/^\/api\/parent\/students\/\d+\/chat$/)){
-    if(!parentSession(ps))return bad('Unauthorized',401);
-    const studentId=idNum(p.split('/')[4]);if(!studentId)return bad('Invalid student');
-    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
-    if(!linked)return bad('Student is not linked to this parent',403);
-    const rows=await env.DB.prepare(`SELECT id,sender_type,sender_id,message,created_at FROM parent_messages WHERE parent_id=? AND student_id=? ORDER BY created_at ASC,id ASC`).bind(ps.parent_id,studentId).all();
-    return json({messages:rows.results||[]});
-  }
-  if(m==='POST'&&p.match(/^\/api\/parent\/students\/\d+\/chat$/)){
-    if(!parentSession(ps))return bad('Unauthorized',401);
-    const studentId=idNum(p.split('/')[4]),b=await body(request),message=clean(b?.message,2000);if(!studentId||!message)return bad('Message is required');
-    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
-    if(!linked)return bad('Student is not linked to this parent',403);
-    const r=await env.DB.prepare(`INSERT INTO parent_messages(parent_id,student_id,sender_type,sender_id,message) VALUES(?,?,?,?,?)`).bind(ps.parent_id,studentId,'parent',ps.parent_id,message).run();
-    return json({id:r.meta.last_row_id},201);
-  }
   if(m==='GET'&&p.match(/^\/api\/parent\/students\/\d+\/teacher-chat$/)){
     if(!parentSession(ps))return bad('Unauthorized',401);
     const studentId=idNum(p.split('/')[4]);if(!studentId)return bad('Invalid student');
@@ -298,22 +282,6 @@ async function api(request,env){
     if(!userSession(s))return bad('Unauthorized',401);
     const rows=await env.DB.prepare(`SELECT p.id,p.full_name,p.username FROM parent_students x JOIN parent_accounts p ON p.id=x.parent_id WHERE x.student_id=? AND p.status='active' ORDER BY p.full_name`).bind(s.user_id).all();
     return json(rows.results||[]);
-  }
-  if(m==='GET'&&p.match(/^\/api\/student\/parents\/\d+\/chat$/)){
-    if(!userSession(s))return bad('Unauthorized',401);
-    const parentId=idNum(p.split('/')[4]);if(!parentId)return bad('Invalid parent');
-    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,s.user_id).first();
-    if(!linked)return bad('Parent is not linked to this student',403);
-    const rows=await env.DB.prepare(`SELECT id,sender_type,sender_id,message,created_at FROM parent_messages WHERE parent_id=? AND student_id=? ORDER BY created_at ASC,id ASC`).bind(parentId,s.user_id).all();
-    return json({messages:rows.results||[]});
-  }
-  if(m==='POST'&&p.match(/^\/api\/student\/parents\/\d+\/chat$/)){
-    if(!userSession(s))return bad('Unauthorized',401);
-    const parentId=idNum(p.split('/')[4]),b=await body(request),message=clean(b?.message,2000);if(!parentId||!message)return bad('Message is required');
-    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,s.user_id).first();
-    if(!linked)return bad('Parent is not linked to this student',403);
-    const r=await env.DB.prepare(`INSERT INTO parent_messages(parent_id,student_id,sender_type,sender_id,message) VALUES(?,?,?,?,?)`).bind(parentId,s.user_id,'student',s.user_id,message).run();
-    return json({id:r.meta.last_row_id},201);
   }
 
   if(m==='GET'&&p==='/api/parent/dashboard'){
