@@ -176,3 +176,22 @@ body.dark-mode .year-filter,body.dark-mode .group-student-row select{background:
 .admin-error{max-width:720px;margin-top:10px}.admin-error h2{margin:.35rem 0 .6rem}.admin-error .btn{margin-top:10px}
 
 .parent-page{padding-top:42px}.parent-summary{min-width:170px;display:flex;flex-direction:column;justify-content:center;gap:5px}.parent-summary strong{font-size:38px}.parent-student-card{margin-top:24px}.parent-student-head{display:flex;justify-content:space-between;align-items:start;gap:20px}.parent-student-head h2{margin:5px 0}.parent-student-head small{display:block;color:var(--muted);margin-top:4px}.public-action-row{display:flex;gap:10px;flex-wrap:wrap}@media(max-width:620px){.parent-student-head{display:block}.parent-student-head .pill{margin-top:12px}.parent-summary{min-width:0;margin-top:16px}}
+
+/* Parent follow-up + parent/student chat */
+.parent-actions{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 14px}
+.parent-mini-results{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:14px}
+.parent-mini-results>div{display:flex;justify-content:space-between;gap:15px;padding:8px 0;font-size:12px}
+.parent-mini-results b{font-weight:800}
+.parent-exam-row{display:flex;justify-content:space-between;align-items:center;gap:18px}
+.parent-exam-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+.parent-options{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;font-size:13px;color:var(--muted)}
+.chat-messages{height:min(52vh,520px);overflow:auto;display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--surface2)}
+.chat-bubble{max-width:78%;padding:11px 13px;border-radius:15px;font-size:13px;line-height:1.5;border:1px solid var(--line);background:var(--surface)}
+.chat-bubble.mine{align-self:flex-end;border-color:#bcd4ff;background:#edf5ff}
+.chat-bubble.theirs{align-self:flex-start}
+.chat-bubble small{display:block;margin-top:5px;font-size:9px;color:var(--muted)}
+.chat-form{display:flex;gap:9px;margin-top:12px}
+.chat-form input{flex:1;min-width:0}
+.chat-parent-choice{width:100%;text-align:left;border:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;gap:12px;align-items:center;color:var(--text)}
+.chat-parent-choice span{font-size:11px;color:var(--muted)}
+@media(max-width:620px){.parent-actions{display:grid;grid-template-columns:1fr}.parent-actions .btn{width:100%}.parent-exam-row{display:block}.parent-exam-actions{justify-content:flex-start;margin-top:12px}.parent-options{grid-template-columns:1fr}.chat-bubble{max-width:90%}.chat-form{align-items:stretch}.chat-form .btn{padding-inline:16px}}

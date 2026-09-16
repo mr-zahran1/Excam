@@ -236,6 +236,86 @@ async function api(request,env){
     }
   }
 
+  if(m==='GET'&&p.match(/^\/api\/parent\/students\/\d+\/exams$/)){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const studentId=idNum(p.split('/')[4]);if(!studentId)return bad('Invalid student');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
+    if(!linked)return bad('Student is not linked to this parent',403);
+    const rows=await env.DB.prepare(`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.status,e.available_from,e.expires_at,
+      (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count,
+      r.id result_id,r.score,r.total_points,r.percentage,r.passed,r.created_at result_date
+      FROM exams e JOIN users u ON u.id=? LEFT JOIN results r ON r.id=(SELECT r2.id FROM results r2 WHERE r2.exam_id=e.id AND r2.user_id=? ORDER BY r2.created_at DESC,r2.id DESC LIMIT 1)
+      WHERE e.status='active' AND (e.grade_level='' OR e.grade_level=u.grade_level)
+      ORDER BY COALESCE(e.available_from,e.created_at) ASC,e.created_at DESC`).bind(studentId,studentId).all();
+    return json({studentId,exams:rows.results||[]});
+  }
+  if(m==='GET'&&p.match(/^\/api\/parent\/students\/\d+\/exams\/\d+$/)){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const parts=p.split('/'),studentId=idNum(parts[4]),examId=idNum(parts[6]);if(!studentId||!examId)return bad('Invalid student or exam');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
+    if(!linked)return bad('Student is not linked to this parent',403);
+    const exam=await env.DB.prepare(`SELECT id,title,description,duration_minutes,passing_percentage,status,available_from,expires_at FROM exams WHERE id=? AND status='active'`).bind(examId).first();
+    if(!exam)return bad('Exam not found',404);
+    const qs=await env.DB.prepare(`SELECT id,question_text,option_a,option_b,option_c,option_d,points,sort_order FROM questions WHERE exam_id=? ORDER BY sort_order,id`).bind(examId).all();
+    return json({exam,questions:qs.results||[]});
+  }
+  if(m==='GET'&&p.match(/^\/api\/parent\/students\/\d+\/chat$/)){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const studentId=idNum(p.split('/')[4]);if(!studentId)return bad('Invalid student');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
+    if(!linked)return bad('Student is not linked to this parent',403);
+    const rows=await env.DB.prepare(`SELECT id,sender_type,sender_id,message,created_at FROM parent_messages WHERE parent_id=? AND student_id=? ORDER BY created_at ASC,id ASC`).bind(ps.parent_id,studentId).all();
+    return json({messages:rows.results||[]});
+  }
+  if(m==='POST'&&p.match(/^\/api\/parent\/students\/\d+\/chat$/)){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const studentId=idNum(p.split('/')[4]),b=await body(request),message=clean(b?.message,2000);if(!studentId||!message)return bad('Message is required');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
+    if(!linked)return bad('Student is not linked to this parent',403);
+    const r=await env.DB.prepare(`INSERT INTO parent_messages(parent_id,student_id,sender_type,sender_id,message) VALUES(?,?,?,?,?)`).bind(ps.parent_id,studentId,'parent',ps.parent_id,message).run();
+    return json({id:r.meta.last_row_id},201);
+  }
+  if(m==='GET'&&p.match(/^\/api\/parent\/students\/\d+\/teacher-chat$/)){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const studentId=idNum(p.split('/')[4]);if(!studentId)return bad('Invalid student');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
+    if(!linked)return bad('Student is not linked to this parent',403);
+    const rows=await env.DB.prepare(`SELECT m.id,m.sender_type,m.sender_id,m.message,m.created_at,COALESCE(a.username,'') teacher_username FROM parent_teacher_messages m LEFT JOIN admin_users a ON a.id=m.teacher_id WHERE m.parent_id=? AND m.student_id=? ORDER BY m.created_at ASC,m.id ASC`).bind(ps.parent_id,studentId).all();
+    return json({messages:rows.results||[]});
+  }
+  if(m==='POST'&&p.match(/^\/api\/parent\/students\/\d+\/teacher-chat$/)){
+    if(!parentSession(ps))return bad('Unauthorized',401);
+    const studentId=idNum(p.split('/')[4]),b=await body(request),message=clean(b?.message,2000);if(!studentId||!message)return bad('Message is required');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(ps.parent_id,studentId).first();
+    if(!linked)return bad('Student is not linked to this parent',403);
+    const teacher=await env.DB.prepare("SELECT id FROM admin_users WHERE status='active' ORDER BY CASE WHEN role='super_admin' THEN 0 ELSE 1 END,id LIMIT 1").first();
+    if(!teacher)return bad('No active teacher account is available',503);
+    const r=await env.DB.prepare(`INSERT INTO parent_teacher_messages(parent_id,student_id,teacher_id,sender_type,sender_id,message) VALUES(?,?,?,?,?,?)`).bind(ps.parent_id,studentId,teacher.id,'parent',ps.parent_id,message).run();
+    return json({id:r.meta.last_row_id},201);
+  }
+
+  if(m==='GET'&&p.match(/^\/api\/student\/parents$/)){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const rows=await env.DB.prepare(`SELECT p.id,p.full_name,p.username FROM parent_students x JOIN parent_accounts p ON p.id=x.parent_id WHERE x.student_id=? AND p.status='active' ORDER BY p.full_name`).bind(s.user_id).all();
+    return json(rows.results||[]);
+  }
+  if(m==='GET'&&p.match(/^\/api\/student\/parents\/\d+\/chat$/)){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const parentId=idNum(p.split('/')[4]);if(!parentId)return bad('Invalid parent');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,s.user_id).first();
+    if(!linked)return bad('Parent is not linked to this student',403);
+    const rows=await env.DB.prepare(`SELECT id,sender_type,sender_id,message,created_at FROM parent_messages WHERE parent_id=? AND student_id=? ORDER BY created_at ASC,id ASC`).bind(parentId,s.user_id).all();
+    return json({messages:rows.results||[]});
+  }
+  if(m==='POST'&&p.match(/^\/api\/student\/parents\/\d+\/chat$/)){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const parentId=idNum(p.split('/')[4]),b=await body(request),message=clean(b?.message,2000);if(!parentId||!message)return bad('Message is required');
+    const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,s.user_id).first();
+    if(!linked)return bad('Parent is not linked to this student',403);
+    const r=await env.DB.prepare(`INSERT INTO parent_messages(parent_id,student_id,sender_type,sender_id,message) VALUES(?,?,?,?,?)`).bind(parentId,s.user_id,'student',s.user_id,message).run();
+    return json({id:r.meta.last_row_id},201);
+  }
+
   if(m==='GET'&&p==='/api/parent/dashboard'){
     if(!parentSession(ps))return bad('Unauthorized',401);
     const links=await env.DB.prepare(`SELECT u.id,u.student_id,u.full_name,u.email,u.phone,u.grade_level,u.education_system,g.name group_name FROM parent_students x JOIN users u ON u.id=x.student_id LEFT JOIN groups g ON g.id=u.group_id WHERE x.parent_id=? AND u.status='active' ORDER BY u.full_name`).bind(ps.parent_id).all();
@@ -350,6 +430,21 @@ async function api(request,env){
     }
     if(m==='DELETE'&&p.match(/^\/api\/admin\/parents\/\d+\/students\/\d+$/)){
       const parentId=idNum(p.split('/')[4]),studentId=idNum(p.split('/')[6]);if(!parentId||!studentId)return bad('Invalid parent or student');await env.DB.prepare('DELETE FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,studentId).run();return json({ok:true});
+    }
+    if(m==='GET'&&p==='/api/admin/parent-chats'){
+      const rows=await env.DB.prepare(`SELECT p.id parent_id,p.full_name parent_name,u.id student_id,u.full_name student_name,u.student_id student_code,MAX(m.created_at) last_message_at,(SELECT m2.message FROM parent_teacher_messages m2 WHERE m2.parent_id=p.id AND m2.student_id=u.id ORDER BY m2.created_at DESC,m2.id DESC LIMIT 1) last_message FROM parent_teacher_messages m JOIN parent_accounts p ON p.id=m.parent_id JOIN users u ON u.id=m.student_id GROUP BY p.id,u.id ORDER BY last_message_at DESC`).all();
+      return json(rows.results||[]);
+    }
+    if(m==='GET'&&p.match(/^\/api\/admin\/parent-chats\/\d+\/\d+$/)){
+      const parts=p.split('/'),parentId=idNum(parts[4]),studentId=idNum(parts[5]);if(!parentId||!studentId)return bad('Invalid conversation');
+      const rows=await env.DB.prepare(`SELECT m.id,m.sender_type,m.sender_id,m.message,m.created_at,COALESCE(a.username,'') teacher_username FROM parent_teacher_messages m LEFT JOIN admin_users a ON a.id=m.teacher_id WHERE m.parent_id=? AND m.student_id=? ORDER BY m.created_at ASC,m.id ASC`).bind(parentId,studentId).all();
+      return json({messages:rows.results||[]});
+    }
+    if(m==='POST'&&p.match(/^\/api\/admin\/parent-chats\/\d+\/\d+$/)){
+      const parts=p.split('/'),parentId=idNum(parts[4]),studentId=idNum(parts[5]),b=await body(request),message=clean(b?.message,2000);if(!parentId||!studentId||!message)return bad('Message is required');
+      const linked=await env.DB.prepare('SELECT 1 FROM parent_students WHERE parent_id=? AND student_id=?').bind(parentId,studentId).first();if(!linked)return bad('Student is not linked to this parent',403);
+      const r=await env.DB.prepare(`INSERT INTO parent_teacher_messages(parent_id,student_id,teacher_id,sender_type,sender_id,message) VALUES(?,?,?,?,?,?)`).bind(parentId,studentId,s.admin_user_id,'teacher',s.admin_user_id,message).run();
+      return json({id:r.meta.last_row_id},201);
     }
     if(m==='GET'&&p==='/api/admin/admins'){if(s.role!=='super_admin')return bad('Super admin required',403);const rows=await env.DB.prepare('SELECT id,username,role,status,created_at FROM admin_users ORDER BY created_at DESC').all();return json(rows.results||[])}
     if(m==='POST'&&p==='/api/admin/admins'){if(s.role!=='super_admin')return bad('Super admin required',403);const b=await body(request),username=clean(b?.username,80).toLowerCase();if(!/^[a-z0-9._-]{3,80}$/.test(username)||!passwordOK(b?.password)||!['admin','super_admin'].includes(b?.role||'admin'))return bad('Invalid admin fields');const exists=await env.DB.prepare('SELECT id FROM admin_users WHERE username=?').bind(username).first();if(exists)return bad('Username already exists',409);const ph=await hashPassword(b.password);const r=await env.DB.prepare('INSERT INTO admin_users(username,password_hash,password_salt,role,status) VALUES(?,?,?,?,?)').bind(username,ph.hash,ph.salt,b.role,'active').run();return json({id:r.meta.last_row_id},201)}
