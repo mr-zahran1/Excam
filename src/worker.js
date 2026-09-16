@@ -124,10 +124,12 @@ async function api(request,env){
       return bad('Answers are required');
     }
 
+    let submitStage='load attempt';
     try{
       const a=await env.DB.prepare(`SELECT a.*,e.passing_percentage,e.duration_minutes,e.title FROM exam_attempts a JOIN exams e ON e.id=a.exam_id WHERE a.id=? AND a.user_id=?`).bind(id,s.user_id).first();
 
       if(!a)return bad('Attempt not found',404);
+      submitStage='validate attempt';
 
       if(a.status!=='in_progress'){
         const existing=await env.DB.prepare(`SELECT r.score,r.total_points,r.percentage,r.passed,e.title AS examTitle FROM results r JOIN exams e ON e.id=r.exam_id WHERE r.attempt_id=?`).bind(id).first();
@@ -146,6 +148,7 @@ async function api(request,env){
         return bad('Time expired',409);
       }
 
+      submitStage='load questions';
       const qs=(await env.DB.prepare(`SELECT * FROM questions WHERE exam_id=? ORDER BY sort_order,id`).bind(a.exam_id).all()).results||[];
       const incoming=new Map(b.answers.map(x=>[Number(x.questionId),['A','B','C','D'].includes(x.answer)?x.answer:null]));
 
@@ -159,6 +162,7 @@ async function api(request,env){
       let score=0,total=0;
       const skillTotals=new Map();
 
+      submitStage='save answers';
       for(const q of qs){
         const points=Number(q.points)||0;
         total+=points;
@@ -177,24 +181,27 @@ async function api(request,env){
         }
       }
 
+      submitStage='calculate result';
       const percentage=total>0?(score/total)*100:0;
       const passed=percentage>=Number(a.passing_percentage)?1:0;
       let skillBreakdown=[];
-      if(skillTotals.size){const ids=[...skillTotals.keys()];const placeholders=ids.map(()=>'?').join(',');const sr=await env.DB.prepare(`SELECT id,name FROM skills WHERE id IN (${placeholders})`).bind(...ids).all();const names=new Map((sr.results||[]).map(x=>[Number(x.id),x.name]));skillBreakdown=[...skillTotals.entries()].map(([id,x])=>({skill:names.get(id)||'Skill',percentage:x.points?Number((x.earned/x.points*100).toFixed(1)):0,questions:x.questions})).sort((x,y)=>x.percentage-y.percentage)}
+      if(skillTotals.size){try{const ids=[...skillTotals.keys()];const placeholders=ids.map(()=>'?').join(',');const sr=await env.DB.prepare(`SELECT id,name FROM skills WHERE id IN (${placeholders})`).bind(...ids).all();const names=new Map((sr.results||[]).map(x=>[Number(x.id),x.name]));skillBreakdown=[...skillTotals.entries()].map(([id,x])=>({skill:names.get(id)||'Skill',percentage:x.points?Number((x.earned/x.points*100).toFixed(1)):0,questions:x.questions})).sort((x,y)=>x.percentage-y.percentage)}catch(err){console.error('SKILL BREAKDOWN ERROR:',err?.message||err);skillBreakdown=[]}}
 
+      submitStage='mark attempt submitted';
       await env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
 
-      // Update an existing result first; insert only when this attempt has no result.
-      // Avoid depending on the attempt_id UNIQUE constraint for older D1 schemas.
-      const updatedResult=await env.DB.prepare(`UPDATE results SET user_id=?,exam_id=?,score=?,total_points=?,percentage=?,passed=? WHERE attempt_id=?`).bind(s.user_id,a.exam_id,score,total,percentage,passed,id).run();
-      if(!Number(updatedResult.meta?.changes||0)){
+      submitStage='save result';
+      const existingResult=await env.DB.prepare(`SELECT id FROM results WHERE attempt_id=? LIMIT 1`).bind(id).first();
+      if(existingResult){
+        await env.DB.prepare(`UPDATE results SET user_id=?,exam_id=?,score=?,total_points=?,percentage=?,passed=? WHERE id=?`).bind(s.user_id,a.exam_id,score,total,percentage,passed,existingResult.id).run();
+      }else{
         await env.DB.prepare(`INSERT INTO results(attempt_id,user_id,exam_id,score,total_points,percentage,passed) VALUES(?,?,?,?,?,?,?)`).bind(id,s.user_id,a.exam_id,score,total,percentage,passed).run();
       }
 
       return json({ok:true,result:{score,totalPoints:total,percentage,passed,examTitle:a.title,examId:a.exam_id,passingPercentage:Number(a.passing_percentage),questionCount:qs.length,answeredCount:[...incoming.values()].filter(Boolean).length,submittedAt:new Date().toISOString(),skillBreakdown}});
     }catch(e){
-      console.error('EXAM SUBMIT ERROR:',e?.message||e);
-      return json({error:'Exam submission failed',details:String(e?.message||e)},500);
+      console.error('EXAM SUBMIT ERROR:',submitStage,e?.message||e);
+      return json({error:`Exam submission failed at ${submitStage}`,details:String(e?.message||e)},500);
     }
   }
 

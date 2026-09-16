@@ -37,7 +37,7 @@ function translateUI(){
   });
 }
 
-async function api(path,opts={}){const r=await fetch(path,{credentials:'same-origin',headers:{'content-type':'application/json',...(opts.headers||{})},...opts});let d=null;try{d=await r.json()}catch{}if(!r.ok)throw new Error(d?.error||'Request failed');return d}
+async function api(path,opts={}){const r=await fetch(path,{credentials:'same-origin',headers:{'content-type':'application/json',...(opts.headers||{})},...opts});let d=null;try{d=await r.json()}catch{}if(!r.ok)throw new Error(d?.details||d?.error||'Request failed');return d}
 function fmtDate(v){return v?new Date(v.replace(' ','T')+'Z').toLocaleString():''}
 function fmtSchedule(v){return v?new Date(v).toLocaleString([], {dateStyle:'medium',timeStyle:'short'}):'Immediately'}
 function localInputValue(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`}
