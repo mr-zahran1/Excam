@@ -174,3 +174,12 @@ Do not commit the real D1 database ID or any bootstrap secret to a public reposi
 - Migration `0015_exam_targeting.sql` must be applied to the D1 database before deploying this version.
 - Migration `0016_learning_resources.sql` adds the optional Video/PDF learning path and resource-open tracking.
 - Exam submission now writes answer rows through a D1 batch, reducing database round trips when many students submit at the same time.
+
+
+## Learning path behavior
+
+- Videos and PDFs remain independent libraries; only URLs are stored.
+- Exams can have no learning path (direct entry), an optional learning path, or a required learning path.
+- When a required path is configured, clicking **Open Learning Path** takes the student to the required sequence. Required items are opened in order; after all required items are opened, **Enter Exam** becomes available.
+- If no resources are linked to an exam, the student enters the exam directly.
+- The backend also enforces the required path, so a direct API request cannot bypass it.
