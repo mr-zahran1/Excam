@@ -159,3 +159,13 @@ npm run deploy
 ## Important deployment step
 
 Do not commit the real D1 database ID or any bootstrap secret to a public repository if your repository is public. Use Wrangler secrets for sensitive values.
+
+
+## Updates in this version
+
+- Exam resources support external PDF/video URLs only; files are not stored in D1.
+- Exam visibility is filtered server-side by student education system (General/Azhar), grade, and optional group.
+- The student exam list is sorted newest-first and hides scheduled/expired exams from students.
+- Admin Students has an end-of-year promotion action. It advances P1→P2→P3→S1→S2→S3 and permanently deletes S3 students before promotion.
+- The question Excel template is updated to the supplied `final.xlsx` format and the importer accepts `Skill` and `Topic`.
+- Migration `0015_exam_targeting.sql` must be applied to the D1 database before deploying this version.
