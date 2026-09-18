@@ -241,3 +241,11 @@ html,body{max-width:100%;overflow-x:hidden}
 }
 @media(min-width:621px){.mobile-menu-btn,.mobile-menu,.mobile-menu-backdrop{display:none!important}}
 body.dark-mode .mobile-menu{background:#0c1a2c;color:#edf5ff;border-color:#29496d}body.dark-mode .mobile-menu-head{border-color:#29496d}body.dark-mode .mobile-menu-items button{background:#12253c;border-color:#29496d;color:#edf5ff}body.dark-mode .mobile-menu-btn{background:#10243a;color:#edf5ff;border-color:#29496d}
+
+/* Exam learning-resource picker */
+.resource-check-list{display:grid;gap:10px;max-height:360px;overflow:auto;margin:12px 0 16px;padding-right:2px}
+.resource-check{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--border,#ddd);border-radius:12px;cursor:pointer;background:var(--card,#fff)}
+.resource-check:hover{filter:brightness(.98)}
+.resource-check input{margin-top:3px;flex:0 0 auto}
+.resource-check span{display:flex;flex-direction:column;gap:4px;min-width:0}
+.resource-check small{color:var(--muted,#777)}
