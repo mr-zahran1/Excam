@@ -240,8 +240,9 @@ async function api(request,env){
         AND (COALESCE(NULLIF(e.target_system,''),'all')='all' OR e.target_system=?)
         AND (COALESCE(NULLIF(e.target_type,''),'all')='all'
           OR (e.target_type='grade' AND (e.target_grade=? OR e.grade_level=?))
-          OR (e.target_type='group' AND e.target_group_id=?))`;
-      params.push(u.grade_level||'',u.education_system||'general',u.grade_level||'',u.grade_level||'',u.group_id||0);
+          OR (e.target_type='group' AND e.target_group_id=?))
+        AND NOT EXISTS (SELECT 1 FROM results pr WHERE pr.exam_id=e.id AND pr.user_id=? AND pr.passed=1)`;
+      params.push(u.grade_level||'',u.education_system||'general',u.grade_level||'',u.grade_level||'',u.group_id||0,s.user_id);
     }
     sql+=` ORDER BY COALESCE(e.available_from,e.created_at) DESC,e.created_at DESC`;
     const rows=await env.DB.prepare(sql).bind(...params).all();
