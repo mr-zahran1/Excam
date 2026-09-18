@@ -14,6 +14,8 @@ A production-oriented exam platform built for Cloudflare Workers + Cloudflare D1
 - Exam entry
 - Server-enforced timer
 - Multiple-choice questions
+- External video/PDF learning resources without file storage in D1
+- Optional required learning path: Video/PDF → Exam
 - Correct answers never sent to the student browser
 - Submit + automatic grading
 - Pass/fail result
@@ -35,6 +37,7 @@ A production-oriented exam platform built for Cloudflare Workers + Cloudflare D1
 - Add/edit/delete questions
 - Set correct answers
 - Set points and order
+- Excel question import using the supplied template
 - Results search
 - Result detail with answer review
 - Super-admin management of admin accounts
@@ -169,3 +172,5 @@ Do not commit the real D1 database ID or any bootstrap secret to a public reposi
 - Admin Students has an end-of-year promotion action. It advances P1→P2→P3→S1→S2→S3 and permanently deletes S3 students before promotion.
 - The question Excel template is updated to the supplied `final.xlsx` format and the importer accepts `Skill` and `Topic`.
 - Migration `0015_exam_targeting.sql` must be applied to the D1 database before deploying this version.
+- Migration `0016_learning_resources.sql` adds the optional Video/PDF learning path and resource-open tracking.
+- Exam submission now writes answer rows through a D1 batch, reducing database round trips when many students submit at the same time.
