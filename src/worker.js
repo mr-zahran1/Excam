@@ -86,6 +86,14 @@ function requiredResourcesComplete(gate,resources,opened){
   return required.every((_,i)=>opened.has(resources.indexOf(_)));
 }
 
+function resourceTargetsStudent(r,u){
+  return (r.grade_level===''||r.grade_level===u.grade_level) &&
+    (r.education_system==='all'||!r.education_system||r.education_system===u.education_system) &&
+    (!r.group_id || Number(r.group_id)===Number(u.group_id||0));
+}
+function normalizeResourceType(v){return ['video','pdf'].includes(String(v||'').toLowerCase())?String(v).toLowerCase():null}
+function normalizeResourceIds(v){return Array.isArray(v)?v.map(idNum).filter(Boolean).slice(0,30):[]}
+
 async function api(request,env){
   const url=new URL(request.url),p=url.pathname,m=request.method,s=await getSession(request,env),ps=await getParentSession(request,env);
   if(!originOK(request))return bad('Invalid request origin',403);
@@ -135,20 +143,66 @@ async function api(request,env){
     if(!student)return bad('This follow-up link is invalid or no longer active',404);
     const results=await env.DB.prepare(`SELECT r.id,r.exam_id,r.score,r.total_points,r.percentage,r.passed,r.created_at,e.title FROM results r JOIN exams e ON e.id=r.exam_id WHERE r.user_id=? ORDER BY r.created_at DESC,r.id DESC`).bind(student.id).all();
     const skills=await env.DB.prepare(`SELECT COALESCE(sk.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(*) questions FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills sk ON sk.id=q.skill_id JOIN exam_attempts ea ON ea.id=a.attempt_id WHERE ea.user_id=? AND ea.status='submitted' GROUP BY q.skill_id ORDER BY percentage ASC`).bind(student.id).all();
-    const exams=await env.DB.prepare(`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.available_from,e.expires_at,
+    const exams=await env.DB.prepare(`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.available_from,e.expires_at,e.resource_gate,(SELECT COUNT(*) FROM exam_resources er JOIN learning_resources lr ON lr.id=er.resource_id WHERE er.exam_id=e.id AND er.required=1) resource_count,
       (SELECT r.id FROM results r WHERE r.exam_id=e.id AND r.user_id=? ORDER BY r.id DESC LIMIT 1) result_id,
       (SELECT r.percentage FROM results r WHERE r.exam_id=e.id AND r.user_id=? ORDER BY r.id DESC LIMIT 1) percentage,
       (SELECT r.passed FROM results r WHERE r.exam_id=e.id AND r.user_id=? ORDER BY r.id DESC LIMIT 1) passed
       FROM exams e WHERE e.status='active' AND (e.expires_at IS NULL OR e.expires_at>datetime('now'))
+      AND (COALESCE(NULLIF(e.target_system,''),'all')='all' OR e.target_system=?)
       AND (e.target_type='all' OR (e.target_type='group' AND e.target_group_id=?) OR (e.target_type='grade' AND e.target_grade=?))
-      ORDER BY COALESCE(e.available_from,e.created_at) DESC`).bind(student.id,student.id,student.id,student.group_id||0,student.grade_level||'').all();
+      ORDER BY COALESCE(e.available_from,e.created_at) DESC`).bind(student.id,student.id,student.id,student.education_system||'general',student.group_id||0,student.grade_level||'').all();
     const rr=results.results||[],stats={completed:rr.length,average:rr.length?rr.reduce((a,r)=>a+Number(r.percentage||0),0)/rr.length:0,best:rr.length?Math.max(...rr.map(r=>Number(r.percentage||0))):0,passed:rr.filter(r=>Number(r.passed)===1).length};
     return json({student,results:rr,skills:skills.results||[],exams:exams.results||[],stats});
   }
 
+  if(m==='GET'&&p==='/api/resources'){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const type=normalizeResourceType(url.searchParams.get('type'));
+    const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
+    if(!u)return bad('Student not found',404);
+    let sql=`SELECT r.id,r.type,r.title,r.url,r.description,r.grade_level,r.education_system,r.group_id,r.created_at,
+      (SELECT COUNT(*) FROM exam_resources er WHERE er.resource_id=r.id) exam_count,
+      EXISTS(SELECT 1 FROM learning_resource_access la WHERE la.resource_id=r.id AND la.user_id=?) opened
+      FROM learning_resources r WHERE r.status='active' AND r.grade_level=? AND (r.education_system='all' OR r.education_system=?) AND (r.group_id IS NULL OR r.group_id=?)`;
+    const params=[s.user_id,u.grade_level||'',u.education_system||'general',u.group_id||0];
+    if(type){sql+=' AND r.type=?';params.push(type)}
+    sql+=' ORDER BY r.type,r.created_at DESC,r.id DESC';
+    const rows=await env.DB.prepare(sql).bind(...params).all();
+    return json(rows.results||[]);
+  }
+  if(m==='POST'&&p.match(/^\/api\/resources\/\d+\/open$/)){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const resourceId=idNum(p.split('/')[3]);if(!resourceId)return bad('Invalid resource');
+    const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
+    const resource=await env.DB.prepare("SELECT * FROM learning_resources WHERE id=? AND status='active'").bind(resourceId).first();
+    if(!u||!resource||!resourceTargetsStudent(resource,u))return bad('Resource is not available for this student.',403);
+    await env.DB.prepare('INSERT OR IGNORE INTO learning_resource_access(resource_id,user_id,opened_at) VALUES(?,?,CURRENT_TIMESTAMP)').bind(resourceId,s.user_id).run();
+    return json({ok:true,resourceId});
+  }
+  if(m==='POST'&&p.match(/^\/api\/exams\/\d+\/resources\/\d+\/open$/)){
+    if(!userSession(s))return bad('Unauthorized',401);
+    const parts=p.split('/'),examId=idNum(parts[3]),resourceId=idNum(parts[5]);
+    if(!examId||!resourceId)return bad('Invalid resource');
+    const exam=await env.DB.prepare(`SELECT id,grade_level,target_system,target_type,target_grade,target_group_id,resource_gate FROM exams WHERE id=? AND status='active'`).bind(examId).first();
+    if(!exam)return bad('Exam not found',404);
+    const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
+    if(!u||!examTargetsStudent(exam,u))return bad('This assessment is not assigned to your academic stage/system.',403);
+    const resource=await env.DB.prepare("SELECT * FROM learning_resources WHERE id=? AND status='active'").bind(resourceId).first();
+    if(!resource||!resourceTargetsStudent(resource,u))return bad('Resource is not available for this student.',403);
+    const link=await env.DB.prepare('SELECT sort_order,required FROM exam_resources WHERE exam_id=? AND resource_id=?').bind(examId,resourceId).first();
+    if(!link)return bad('This resource is not part of the learning path.',403);
+    if(exam.resource_gate==='required_all' && Number(link.required)!==0 && Number(link.sort_order)>1){
+      const previous=await env.DB.prepare(`SELECT er.resource_id FROM exam_resources er WHERE er.exam_id=? AND er.required=1 AND er.sort_order<? ORDER BY er.sort_order`).bind(examId,link.sort_order).all();
+      const ids=(previous.results||[]).map(x=>Number(x.resource_id));
+      if(ids.length){const ph=ids.map(()=>'?').join(',');const opened=await env.DB.prepare(`SELECT resource_id FROM learning_resource_access WHERE user_id=? AND resource_id IN (${ph})`).bind(s.user_id,...ids).all();if((opened.results||[]).length!==ids.length)return bad('Complete the previous required learning resources first.',409)}
+    }
+    await env.DB.prepare('INSERT OR IGNORE INTO learning_resource_access(resource_id,user_id,opened_at) VALUES(?,?,CURRENT_TIMESTAMP)').bind(resourceId,s.user_id).run();
+    return json({ok:true,resourceId});
+  }
+
   if(m==='GET'&&p==='/api/exams'){
     if(!userSession(s)&&!adminSession(s))return bad('Unauthorized',401);
-    let sql=`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.status,e.created_at,e.attachments_json,e.desktop_required,e.available_from,e.expires_at,e.grade_level,e.target_system,e.target_type,e.target_grade,e.target_group_id,e.resource_gate,(SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e`;
+    let sql=`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.status,e.created_at,e.attachments_json,e.desktop_required,e.available_from,e.expires_at,e.grade_level,e.target_system,e.target_type,e.target_grade,e.target_group_id,e.resource_gate,(SELECT COUNT(*) FROM exam_resources er WHERE er.exam_id=e.id AND er.required=1) resource_count,(SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e`;
     const params=[];
     if(userSession(s)){
       const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
@@ -170,52 +224,27 @@ async function api(request,env){
   if(m==='GET'&&p.match(/^\/api\/exams\/\d+\/resources$/)){
     if(!userSession(s))return bad('Unauthorized',401);
     const id=idNum(p.split('/')[3]);
-    const e=id?await env.DB.prepare(`SELECT id,title,description,grade_level,target_system,target_type,target_grade,target_group_id,resource_gate,attachments_json FROM exams WHERE id=? AND status='active'`).bind(id).first():null;
+    const e=id?await env.DB.prepare(`SELECT id,title,description,grade_level,target_system,target_type,target_grade,target_group_id,resource_gate FROM exams WHERE id=? AND status='active'`).bind(id).first():null;
     if(!e)return bad('Exam not found',404);
     const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
     if(!u||!examTargetsStudent(e,u))return bad('This assessment is not assigned to your academic stage/system.',403);
-    const resources=parseAttachments(e.attachments_json);
-    const openedRows=await env.DB.prepare('SELECT resource_index FROM exam_resource_access WHERE exam_id=? AND user_id=?').bind(id,s.user_id).all();
-    return json({exam:{id:e.id,title:e.title,resourceGate:e.resource_gate||'direct'},resources,opened:(openedRows.results||[]).map(x=>Number(x.resource_index))});
-  }
-  if(m==='POST'&&p.match(/^\/api\/exams\/\d+\/resources\/open$/)){
-    if(!userSession(s))return bad('Unauthorized',401);
-    const id=idNum(p.split('/')[3]),b=await body(request),index=Number(b?.resourceIndex);
-    if(!id||!Number.isInteger(index)||index<0)return bad('Invalid resource');
-    const e=await env.DB.prepare(`SELECT id,grade_level,target_system,target_type,target_grade,target_group_id,resource_gate,attachments_json FROM exams WHERE id=? AND status='active'`).bind(id).first();
-    if(!e)return bad('Exam not found',404);
-    const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
-    if(!u||!examTargetsStudent(e,u))return bad('This assessment is not assigned to your academic stage/system.',403);
-    const resources=parseAttachments(e.attachments_json);
-    if(index>=resources.length)return bad('Resource not found',404);
-    if(e.resource_gate==='required_all'){
-      const requiredIndexes=resources.map((r,i)=>r.required===false?null:i).filter(i=>i!==null);
-      const position=requiredIndexes.indexOf(index);
-      if(position>0){
-        const previous=requiredIndexes.slice(0,position);
-        const placeholders=previous.map(()=>'?').join(',');
-        const rows=await env.DB.prepare(`SELECT resource_index FROM exam_resource_access WHERE exam_id=? AND user_id=? AND resource_index IN (${placeholders})`).bind(id,s.user_id,...previous).all();
-        if((rows.results||[]).length!==previous.length)return bad('Complete the learning resources in order before continuing.',409);
-      }
-    }
-    await env.DB.prepare('INSERT OR IGNORE INTO exam_resource_access(exam_id,user_id,resource_index) VALUES(?,?,?)').bind(id,s.user_id,index).run();
-    const openedRows=await env.DB.prepare('SELECT resource_index FROM exam_resource_access WHERE exam_id=? AND user_id=?').bind(id,s.user_id).all();
-    return json({ok:true,opened:(openedRows.results||[]).map(x=>Number(x.resource_index))});
+    const rows=await env.DB.prepare(`SELECT r.id,r.type,r.title,r.url,r.description,er.sort_order,er.required
+      FROM exam_resources er JOIN learning_resources r ON r.id=er.resource_id
+      WHERE er.exam_id=? ORDER BY er.sort_order`).bind(id).all();
+    const resources=(rows.results||[]).filter(r=>resourceTargetsStudent(r,u));
+    const openedRows=resources.length?await env.DB.prepare(`SELECT resource_id FROM learning_resource_access WHERE user_id=? AND resource_id IN (${resources.map(()=>'?').join(',')})`).bind(s.user_id,...resources.map(r=>r.id)).all():{results:[]};
+    return json({exam:{id:e.id,title:e.title,resourceGate:e.resource_gate||'direct'},resources,opened:(openedRows.results||[]).map(x=>Number(x.resource_id))});
   }
 
   if(m==='GET'&&p.match(/^\/api\/exams\/\d+\/start$/)){
-    if(!userSession(s))return bad('Unauthorized',401);const id=idNum(p.split('/')[3]);const e=id?await env.DB.prepare(`SELECT id,title,description,duration_minutes,passing_percentage,attachments_json,desktop_required,grade_level,target_system,target_type,target_grade,target_group_id,resource_gate FROM exams WHERE id=? AND status='active'`).bind(id).first():null;if(!e)return bad('Exam not found',404);
+    if(!userSession(s))return bad('Unauthorized',401);const id=idNum(p.split('/')[3]);const e=id?await env.DB.prepare(`SELECT id,title,description,duration_minutes,passing_percentage,desktop_required,grade_level,target_system,target_type,target_grade,target_group_id,resource_gate FROM exams WHERE id=? AND status='active'`).bind(id).first():null;if(!e)return bad('Exam not found',404);
     const student=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
     if(!student)return bad('Student not found',404);
     if(!examTargetsStudent(e,student))return bad('This assessment is not assigned to your academic stage/system.',403);
-    const resources=parseAttachments(e.attachments_json);
     if(e.resource_gate==='required_all'){
-      const requiredIndexes=resources.map((r,i)=>r.required===false?null:i).filter(i=>i!==null);
-      if(requiredIndexes.length){
-        const placeholders=requiredIndexes.map(()=>'?').join(',');
-        const opened=await env.DB.prepare(`SELECT resource_index FROM exam_resource_access WHERE exam_id=? AND user_id=? AND resource_index IN (${placeholders})`).bind(id,s.user_id,...requiredIndexes).all();
-        if((opened.results||[]).length!==requiredIndexes.length)return json({ok:false,canEnter:false,reason:'resources_required',error:'Complete the required learning resources before starting this exam.',message:'Complete the required learning resources before starting this exam.'},409);
-      }
+      const required=await env.DB.prepare(`SELECT resource_id FROM exam_resources WHERE exam_id=? AND required=1 ORDER BY sort_order`).bind(id).all();
+      const ids=(required.results||[]).map(x=>Number(x.resource_id));
+      if(ids.length){const placeholders=ids.map(()=>'?').join(',');const opened=await env.DB.prepare(`SELECT resource_id FROM learning_resource_access WHERE user_id=? AND resource_id IN (${placeholders})`).bind(s.user_id,...ids).all();if((opened.results||[]).length!==ids.length)return json({ok:false,canEnter:false,reason:'resources_required',error:'Complete the required learning path before starting this exam.',message:'Complete the required learning path before starting this exam.'},409)}
     }
     if(Number(e.desktop_required)===1 && /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(request.headers.get('user-agent')||'')){return json({ok:false,canEnter:false,reason:'desktop_required',error:'This assessment must be taken on a desktop or laptop.',message:'This assessment must be taken on a desktop or laptop.'},409)}
     const schedule=availabilityState(e.available_from,e.expires_at);if(schedule==='scheduled')return json({ok:false,canEnter:false,reason:'not_started',error:'This assessment is not open yet.',message:'This assessment is not open yet.',availableFrom:e.available_from},409);if(schedule==='expired')return json({ok:false,canEnter:false,reason:'expired',error:'This assessment is no longer available.',message:'This assessment is no longer available.'},410)
@@ -231,7 +260,7 @@ async function api(request,env){
       if(!attempt)return bad('Could not create exam attempt',500);
     }
     const age=(Date.now()-Date.parse(attempt.started_at))/60000;if(age>e.duration_minutes+0.5){await env.DB.prepare("UPDATE exam_attempts SET status='expired',submitted_at=CURRENT_TIMESTAMP WHERE id=?").bind(attempt.id).run();return bad('This attempt has expired',409)}
-    const qs=await env.DB.prepare('SELECT id,question_text,option_a,option_b,option_c,option_d,points,sort_order,attachments_json,skill_id,topic FROM questions WHERE exam_id=? ORDER BY sort_order,id').bind(id).all();const exam={...e};delete exam.attachments_json;const questions=(qs.results||[]).map(q=>{const x={...q,attachments:parseAttachments(q.attachments_json)};delete x.attachments_json;return x});return json({exam,attachments:resources,resourceGate:e.resource_gate||'direct',attemptId:attempt.id,startedAt:attempt.started_at,questions});
+    const qs=await env.DB.prepare('SELECT id,question_text,option_a,option_b,option_c,option_d,points,sort_order,attachments_json,skill_id,topic FROM questions WHERE exam_id=? ORDER BY sort_order,id').bind(id).all();const exam={...e};delete exam.attachments_json;const questions=(qs.results||[]).map(q=>{const x={...q,attachments:parseAttachments(q.attachments_json)};delete x.attachments_json;return x});return json({exam,attachments:[],resourceGate:e.resource_gate||'direct',attemptId:attempt.id,startedAt:attempt.started_at,questions});
   }
   if(m==='POST'&&p.match(/^\/api\/attempts\/\d+\/submit$/)){
     if(!userSession(s))return bad('Unauthorized',401);
@@ -468,11 +497,32 @@ async function api(request,env){
     if(m==='DELETE'&&p.match(/^\/api\/admin\/groups\/\d+$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid group');const g=await env.DB.prepare('SELECT id FROM groups WHERE id=?').bind(id).first();if(!g)return bad('Group not found',404);await env.DB.prepare('UPDATE users SET group_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE group_id=?').bind(id).run();await env.DB.prepare('DELETE FROM groups WHERE id=?').bind(id).run();return json({ok:true})}
     if(m==='POST'&&p.match(/^\/api\/admin\/groups\/\d+\/students$/)){const id=idNum(p.split('/')[4]),b=await body(request),key=clean(b?.student,120).toLowerCase();if(!id||!key)return bad('Student ID or email is required');const g=await env.DB.prepare('SELECT * FROM groups WHERE id=?').bind(id).first();if(!g)return bad('Group not found',404);const u=await env.DB.prepare('SELECT id,grade_level FROM users WHERE lower(student_id)=? OR lower(email)=?').bind(key,key).first();if(!u)return bad('Student not found',404);if(u.grade_level!==g.grade)return bad('Student grade does not match this group',409);await env.DB.prepare('UPDATE users SET group_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(id,u.id).run();return json({ok:true})}
     if(m==='PATCH'&&p.match(/^\/api\/admin\/students\/\d+\/group$/)){const id=idNum(p.split('/')[4]),b=await body(request),groupId=b?.groupId? idNum(b.groupId):null;if(!id)return bad('Invalid student');if(groupId){const g=await env.DB.prepare('SELECT id,grade FROM groups WHERE id=?').bind(groupId).first();if(!g)return bad('Group not found',404);const u=await env.DB.prepare('SELECT grade_level FROM users WHERE id=?').bind(id).first();if(!u)return bad('Student not found',404);if(u.grade_level!==g.grade)return bad('Student grade does not match this group',409)}await env.DB.prepare('UPDATE users SET group_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(groupId,id).run();return json({ok:true})}
+    if(m==='GET'&&p==='/api/admin/resources'){
+      const type=normalizeResourceType(url.searchParams.get('type')),grade=cleanGrade(url.searchParams.get('grade'));
+      let sql=`SELECT r.*,g.name group_name,(SELECT COUNT(*) FROM exam_resources er WHERE er.resource_id=r.id) exam_count FROM learning_resources r LEFT JOIN groups g ON g.id=r.group_id WHERE 1=1`,params=[];
+      if(type){sql+=' AND r.type=?';params.push(type)} if(grade){sql+=' AND r.grade_level=?';params.push(grade)} sql+=' ORDER BY r.type,r.grade_level,r.created_at DESC,r.id DESC';
+      const rows=await env.DB.prepare(sql).bind(...params).all();return json(rows.results||[]);
+    }
+    if(m==='POST'&&p==='/api/admin/resources'){
+      const b=await body(request),type=normalizeResourceType(b?.type),title=clean(b?.title,200),resourceUrl=clean(b?.url,2000),description=clean(b?.description,500),grade=cleanGrade(b?.gradeLevel),system=['general','azhar','all'].includes(String(b?.educationSystem||'').toLowerCase())?String(b.educationSystem).toLowerCase():'general',groupId=b?.groupId?idNum(b.groupId):null;
+      if(!type||!title||!/^https?:\/\//i.test(resourceUrl)||!grade)return bad('Type, title, valid URL and grade are required');
+      if(groupId){const g=await env.DB.prepare('SELECT id,grade,system FROM groups WHERE id=?').bind(groupId).first();if(!g)return bad('Group not found',404);if(g.grade!==grade)return bad('Group grade does not match resource grade',409);if(system!=='all'&&g.system!==system)return bad('Group system does not match resource system',409)}
+      const r=await env.DB.prepare('INSERT INTO learning_resources(type,title,url,description,grade_level,education_system,group_id,status,created_by) VALUES(?,?,?,?,?,?,?,?,?)').bind(type,title,resourceUrl,description,grade,system,groupId,'active',s.admin_user_id).run();return json({id:r.meta.last_row_id},201);
+    }
+    if(m==='PUT'&&p.match(/^\/api\/admin\/resources\/\d+$/)){
+      const id=idNum(p.split('/')[4]),b=await body(request),type=normalizeResourceType(b?.type),title=clean(b?.title,200),resourceUrl=clean(b?.url,2000),description=clean(b?.description,500),grade=cleanGrade(b?.gradeLevel),system=['general','azhar','all'].includes(String(b?.educationSystem||'').toLowerCase())?String(b.educationSystem).toLowerCase():'general',groupId=b?.groupId?idNum(b.groupId):null,status=b?.status==='inactive'?'inactive':'active';
+      if(!id||!type||!title||!/^https?:\/\//i.test(resourceUrl)||!grade)return bad('Invalid resource fields');
+      await env.DB.prepare('UPDATE learning_resources SET type=?,title=?,url=?,description=?,grade_level=?,education_system=?,group_id=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(type,title,resourceUrl,description,grade,system,groupId,status,id).run();return json({ok:true});
+    }
+    if(m==='DELETE'&&p.match(/^\/api\/admin\/resources\/\d+$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid resource');await env.DB.prepare('DELETE FROM learning_resources WHERE id=?').bind(id).run();return json({ok:true})}
+    if(m==='GET'&&p.match(/^\/api\/admin\/exams\/\d+\/resources$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid exam');const rows=await env.DB.prepare(`SELECT r.id,r.type,r.title,r.url,r.grade_level,r.education_system,er.sort_order,er.required FROM exam_resources er JOIN learning_resources r ON r.id=er.resource_id WHERE er.exam_id=? ORDER BY er.sort_order`).bind(id).all();return json(rows.results||[])}
+    if(m==='PUT'&&p.match(/^\/api\/admin\/exams\/\d+\/resources$/)){const id=idNum(p.split('/')[4]),b=await body(request),ids=normalizeResourceIds(b?.resourceIds),gate=b?.resourceGate==='required_all'?'required_all':'direct';if(!id)return bad('Invalid exam');const ex=await env.DB.prepare('SELECT id,grade_level,target_system,target_type,target_grade,target_group_id FROM exams WHERE id=?').bind(id).first();if(!ex)return bad('Exam not found',404);const resources=ids.length?await env.DB.prepare(`SELECT id,grade_level,education_system,group_id FROM learning_resources WHERE id IN (${ids.map(()=>'?').join(',')})`).bind(...ids).all():{results:[]};const map=new Map((resources.results||[]).map(r=>[Number(r.id),r]));for(const rid of ids){const r=map.get(rid);if(!r)return bad('One or more selected resources no longer exist',404);if(r.grade_level!==ex.grade_level)return bad('All learning resources must match the exam grade',409);if(ex.target_system!=='all'&&r.education_system!=='all'&&r.education_system!==ex.target_system)return bad('Resource system does not match the exam system',409)}await env.DB.prepare('DELETE FROM exam_resources WHERE exam_id=?').bind(id).run();if(ids.length)await env.DB.batch(ids.map((rid,i)=>env.DB.prepare('INSERT INTO exam_resources(exam_id,resource_id,sort_order,required) VALUES(?,?,?,1)').bind(id,rid,i+1)));await env.DB.prepare('UPDATE exams SET resource_gate=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(gate,id).run();return json({ok:true,count:ids.length})}
+
     if(m==='GET'&&p==='/api/admin/skills'){const rows=await env.DB.prepare(`SELECT s.*,COUNT(q.id) question_count FROM skills s LEFT JOIN questions q ON q.skill_id=s.id GROUP BY s.id ORDER BY s.name`).all();return json(rows.results||[])}
     if(m==='POST'&&p==='/api/admin/skills'){const b=await body(request),name=clean(b?.name,80),description=clean(b?.description,300);if(!name)return bad('Skill name is required');try{const r=await env.DB.prepare('INSERT INTO skills(name,description) VALUES(?,?)').bind(name,description).run();return json({id:r.meta.last_row_id},201)}catch{return bad('Skill already exists',409)}}
     if(m==='GET'&&p==='/api/admin/analytics'){const grade=cleanGrade(url.searchParams.get('grade'));const groups=grade?await env.DB.prepare(`SELECT g.id,g.name,g.system,g.grade,COUNT(DISTINCT u.id) students,ROUND(AVG(r.percentage),1) average_score FROM groups g LEFT JOIN users u ON u.group_id=g.id LEFT JOIN results r ON r.user_id=u.id WHERE g.grade=? GROUP BY g.id ORDER BY g.name`).bind(grade).all():await env.DB.prepare(`SELECT g.id,g.name,g.system,g.grade,COUNT(DISTINCT u.id) students,ROUND(AVG(r.percentage),1) average_score FROM groups g LEFT JOIN users u ON u.group_id=g.id LEFT JOIN results r ON r.user_id=u.id GROUP BY g.id ORDER BY g.grade,g.name`).all();const skills=grade?await env.DB.prepare(`SELECT COALESCE(s.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(DISTINCT ea.user_id) students FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills s ON s.id=q.skill_id JOIN exam_attempts ea ON ea.id=a.attempt_id JOIN exams e ON e.id=ea.exam_id WHERE ea.status='submitted' AND e.grade_level=? GROUP BY q.skill_id ORDER BY percentage ASC`).bind(grade).all():await env.DB.prepare(`SELECT COALESCE(s.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(DISTINCT ea.user_id) students FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills s ON s.id=q.skill_id JOIN exam_attempts ea ON ea.id=a.attempt_id WHERE ea.status='submitted' GROUP BY q.skill_id ORDER BY percentage ASC`).all();return json({groups:groups.results||[],skills:skills.results||[]})}
     if(m==='GET'&&(p==='/api/admin/exams'||p==='/api/admin/exams/')){
-      const grade=cleanGrade(url.searchParams.get('grade'));const rows=grade?await env.DB.prepare(`SELECT e.*, (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e WHERE e.grade_level=? ORDER BY e.created_at DESC`).bind(grade).all():await env.DB.prepare(`SELECT e.*, (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e ORDER BY e.created_at DESC`).all();return json(rows.results||[]);
+      const grade=cleanGrade(url.searchParams.get('grade'));const rows=grade?await env.DB.prepare(`SELECT e.*, (SELECT COUNT(*) FROM exam_resources er WHERE er.exam_id=e.id AND er.required=1) resource_count, (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e WHERE e.grade_level=? ORDER BY e.created_at DESC`).bind(grade).all():await env.DB.prepare(`SELECT e.*, (SELECT COUNT(*) FROM exam_resources er WHERE er.exam_id=e.id AND er.required=1) resource_count, (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e ORDER BY e.created_at DESC`).all();return json(rows.results||[]);
     }
     if(m==='POST'&&(p==='/api/admin/exams'||p==='/api/admin/exams/')){
       const b=await body(request),title=clean(b?.title,200),grade=cleanGrade(b?.gradeLevel),duration=Number(b?.durationMinutes),pass=Number(b?.passingPercentage),attachments=normalizeAttachments(b?.attachments),desktopRequired=b?.desktopRequired?1:0,resourceGate=b?.resourceGate==='required_all'?'required_all':'direct',targetSystem=['general','azhar','all'].includes(String(b?.targetSystem||'').toLowerCase())?String(b.targetSystem).toLowerCase():'all',targetType=['all','grade','group'].includes(String(b?.targetType||'').toLowerCase())?String(b.targetType).toLowerCase():'all',targetGrade=cleanGrade(b?.targetGrade||grade),targetGroupId=b?.targetGroupId?idNum(b.targetGroupId):null,availableFrom=isoOrNull(b?.availableFrom),availabilityHours=b?.availabilityHours===''||b?.availabilityHours==null?null:Number(b?.availabilityHours);if(!title||!grade||!Number.isInteger(duration)||duration<1||duration>600||!Number.isFinite(pass)||pass<0||pass>100)return bad('Invalid exam fields');if(b?.availableFrom&&!availableFrom)return bad('Invalid availability start date');if(availabilityHours!==null&&(!Number.isFinite(availabilityHours)||availabilityHours<1||availabilityHours>720))return bad('Availability window must be between 1 and 720 hours');const expiresAt=availableFrom&&availabilityHours!==null?new Date(Date.parse(availableFrom)+availabilityHours*3600000).toISOString():null;const r=await env.DB.prepare('INSERT INTO exams(title,description,grade_level,duration_minutes,passing_percentage,status,created_by,attachments_json,desktop_required,available_from,expires_at,target_type,target_system,target_grade,target_group_id,resource_gate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(title,clean(b?.description),grade,duration,pass,b?.status==='active'?'active':'inactive',s.admin_user_id,JSON.stringify(attachments),desktopRequired,availableFrom,expiresAt,targetType,targetSystem,targetGrade,targetGroupId,resourceGate).run();return json({id:r.meta.last_row_id},201);
