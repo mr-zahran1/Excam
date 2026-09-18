@@ -59,9 +59,91 @@ function resolveStudentGroup(groupValue,grade,system,env){
 }
 function now(){return Math.floor(Date.now()/1000)}
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function studentCredentialsEmail(student,origin){
-  const name=escapeHtml(student.name),phone=escapeHtml(student.phone||'Not provided'),id=escapeHtml(student.studentId),password=escapeHtml(student.password),loginUrl=`${origin}/`;
-  return {subject:'Your Excam Student Account Details',html:`<!doctype html><html><body style="margin:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#172033"><div style="max-width:640px;margin:32px auto;padding:0 16px"><div style="background:#102a56;border-radius:20px 20px 0 0;padding:28px 32px;color:#fff"><div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;opacity:.8">Excam</div><h1 style="margin:10px 0 0;font-size:28px">Your student account is ready</h1></div><div style="background:#fff;padding:32px;border-radius:0 0 20px 20px;box-shadow:0 8px 30px rgba(16,42,86,.08)"><p style="font-size:17px;margin-top:0">Hello <strong>${name}</strong>,</p><p style="line-height:1.7;color:#5d687c">Your Excam student account has been created. Please keep the following login details private and use them to access your exams.</p><div style="margin:24px 0;padding:20px;background:#f7f9fc;border:1px solid #e4e9f1;border-radius:14px"><div style="margin-bottom:14px"><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Name</span><strong style="font-size:17px">${name}</strong></div><div style="margin-bottom:14px"><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Phone</span><strong style="font-size:17px">${phone}</strong></div><div style="margin-bottom:14px"><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Student ID</span><strong style="font-size:19px;letter-spacing:1px">${id}</strong></div><div><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Password</span><strong style="font-size:19px;letter-spacing:1px">${password}</strong></div></div><a href="${loginUrl}" style="display:inline-block;background:#f28c28;color:#fff;text-decoration:none;padding:13px 22px;border-radius:10px;font-weight:700">Open Excam</a><p style="margin:24px 0 0;color:#7a8495;font-size:13px;line-height:1.6">For your security, do not share your Student ID or password with anyone.</p></div><p style="text-align:center;color:#98a1af;font-size:12px;padding:16px 0">Excam · Student Portal</p></div></body></html>`,text:`Hello ${student.name},\n\nYour Excam student account is ready.\n\nName: ${student.name}\nPhone: ${student.phone||'Not provided'}\nStudent ID: ${student.studentId}\nPassword: ${student.password}\n\nOpen Excam: ${loginUrl}\n\nPlease keep your login details private.`};
+function studentCredentialsEmail(student, origin) {
+  const name = escapeHtml(student.name);
+  const id = escapeHtml(student.studentId);
+  const password = escapeHtml(student.password);
+
+  return {
+    subject: 'Your Excam Student Account Details',
+
+    html: `<!doctype html>
+<html>
+<body style="margin:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#172033">
+
+<div style="max-width:640px;margin:32px auto;padding:0 16px">
+
+  <div style="background:#102a56;border-radius:20px 20px 0 0;padding:28px 32px;color:#fff">
+    <div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;opacity:.8">
+      Excam
+    </div>
+
+    <h1 style="margin:10px 0 0;font-size:28px">
+      Student Account
+    </h1>
+  </div>
+
+  <div style="background:#fff;padding:32px;border-radius:0 0 20px 20px;box-shadow:0 8px 30px rgba(16,42,86,.08)">
+
+    <p style="font-size:17px;margin-top:0">
+      Hello <strong>${name}</strong>,
+    </p>
+
+    <p style="line-height:1.7;color:#5d687c">
+      Your student account has been created successfully.
+    </p>
+
+    <div style="margin:24px 0;padding:20px;background:#f7f9fc;border:1px solid #e4e9f1;border-radius:14px">
+
+      <div style="margin-bottom:16px">
+        <span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">
+          Student ID
+        </span>
+
+        <strong style="font-size:19px;letter-spacing:1px">
+          ${id}
+        </strong>
+      </div>
+
+      <div>
+        <span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">
+          Password
+        </span>
+
+        <strong style="font-size:19px;letter-spacing:1px">
+          ${password}
+        </strong>
+      </div>
+
+    </div>
+
+    <p style="margin:24px 0 0;color:#7a8495;font-size:13px;line-height:1.6">
+      Please keep your Student ID and password private.
+    </p>
+
+  </div>
+
+  <p style="text-align:center;color:#98a1af;font-size:12px;padding:16px 0">
+    Excam · Student Portal
+  </p>
+
+</div>
+
+</body>
+</html>`,
+
+    text: `Hello ${student.name},
+
+Your student account has been created successfully.
+
+Account Details
+
+Student ID: ${student.studentId}
+
+Password: ${student.password}
+
+Please keep your Student ID and password private.`
+  };
 }
 async function sendCredentialEmails(env,students,origin){
   const endpoint=String(env.GMAIL_APPS_SCRIPT_URL||'').trim(),token=String(env.GMAIL_APPS_SCRIPT_TOKEN||'').trim();
