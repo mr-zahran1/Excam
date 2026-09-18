@@ -14,10 +14,12 @@ function fromB64(s){s=s.replaceAll('-','+').replaceAll('_','/');while(s.length%4
 function clean(v,max=10000){return String(v??'').trim().slice(0,max)}
 function normalizeAttachments(value){
   const arr=Array.isArray(value)?value:[];
-  return arr.slice(0,10).map(x=>({
-    name:clean(x?.name||x?.title,200),
-    url:clean(x?.url,2000)
-  })).filter(x=>x.name&&/^https?:\/\//i.test(x.url));
+  return arr.slice(0,20).map(x=>{
+    const url=clean(x?.url,2000),name=clean(x?.name||x?.title,200);
+    const rawType=String(x?.type||'').toLowerCase();
+    const type=['pdf','video','link'].includes(rawType)?rawType:(/\.pdf(?:$|[?#])/i.test(url)?'pdf':(/(youtube\.com|youtu\.be|vimeo\.com|\.mp4(?:$|[?#]))/i.test(url)?'video':'link'));
+    return {name,url,type};
+  }).filter(x=>x.name&&/^https?:\/\//i.test(x.url));
 }
 function parseAttachments(value){
   try{return normalizeAttachments(JSON.parse(value||'[]'))}
@@ -134,10 +136,33 @@ async function api(request,env){
 
   if(m==='GET'&&p==='/api/exams'){
     if(!userSession(s)&&!adminSession(s))return bad('Unauthorized',401);
-    const rows=await env.DB.prepare(`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.status,e.created_at,e.attachments_json,e.desktop_required,e.available_from,e.expires_at,(SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e ${adminSession(s)?'':'WHERE e.status=\'active\' AND (e.expires_at IS NULL OR e.expires_at>datetime(\'now\'))'} ORDER BY COALESCE(e.available_from,e.created_at) ASC,e.created_at DESC`).all();const results=(rows.results||[]).map(e=>({...e,attachments:parseAttachments(e.attachments_json)}));return json(results);
+    let sql=`SELECT e.id,e.title,e.description,e.duration_minutes,e.passing_percentage,e.status,e.created_at,e.attachments_json,e.desktop_required,e.available_from,e.expires_at,e.grade_level,e.target_system,e.target_type,e.target_grade,e.target_group_id,(SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e`;
+    const params=[];
+    if(userSession(s)){
+      const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
+      if(!u)return bad('Student not found',404);
+      sql+=` WHERE e.status='active'
+        AND (e.available_from IS NULL OR e.available_from<=datetime('now'))
+        AND (e.expires_at IS NULL OR e.expires_at>datetime('now'))
+        AND (e.grade_level='' OR e.grade_level=?)
+        AND (COALESCE(e.target_system,'all')='all' OR e.target_system=?)
+        AND (COALESCE(e.target_type,'all')='all'
+          OR (e.target_type='grade' AND (e.target_grade=? OR e.grade_level=?))
+          OR (e.target_type='group' AND e.target_group_id=?))`;
+      params.push(u.grade_level||'',u.education_system||'general',u.grade_level||'',u.grade_level||'',u.group_id||0);
+    }
+    sql+=` ORDER BY COALESCE(e.available_from,e.created_at) DESC,e.created_at DESC`;
+    const rows=await env.DB.prepare(sql).bind(...params).all();
+    return json((rows.results||[]).map(e=>({...e,attachments:parseAttachments(e.attachments_json)})));
   }
   if(m==='GET'&&p.match(/^\/api\/exams\/\d+\/start$/)){
-    if(!userSession(s))return bad('Unauthorized',401);const id=idNum(p.split('/')[3]);const e=id?await env.DB.prepare('SELECT id,title,description,duration_minutes,passing_percentage,attachments_json,desktop_required FROM exams WHERE id=? AND status=\'active\'').bind(id).first():null;if(!e)return bad('Exam not found',404);
+    if(!userSession(s))return bad('Unauthorized',401);const id=idNum(p.split('/')[3]);const e=id?await env.DB.prepare(`SELECT id,title,description,duration_minutes,passing_percentage,attachments_json,desktop_required,grade_level,target_system,target_type,target_grade,target_group_id FROM exams WHERE id=? AND status='active'`).bind(id).first():null;if(!e)return bad('Exam not found',404);
+    const student=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
+    if(!student)return bad('Student not found',404);
+    const targetMatches=(e.grade_level===''||e.grade_level===student.grade_level) &&
+      (e.target_system==='all'||e.target_system===student.education_system) &&
+      (e.target_type==='all'||(e.target_type==='grade'&&(e.target_grade===student.grade_level||e.grade_level===student.grade_level))||(e.target_type==='group'&&Number(e.target_group_id)===Number(student.group_id||0)));
+    if(!targetMatches)return bad('This assessment is not assigned to your academic stage/system.',403);
     if(Number(e.desktop_required)===1 && /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(request.headers.get('user-agent')||'')){return json({ok:false,canEnter:false,reason:'desktop_required',error:'This assessment must be taken on a desktop or laptop.',message:'This assessment must be taken on a desktop or laptop.'},409)}
     const schedule=availabilityState(e.available_from,e.expires_at);if(schedule==='scheduled')return json({ok:false,canEnter:false,reason:'not_started',error:'This assessment is not open yet.',message:'This assessment is not open yet.',availableFrom:e.available_from},409);if(schedule==='expired')return json({ok:false,canEnter:false,reason:'expired',error:'This assessment is no longer available.',message:'This assessment is no longer available.'},410)
     const previousResult=await env.DB.prepare("SELECT id,passed,percentage,created_at FROM results WHERE exam_id=? AND user_id=? ORDER BY created_at DESC,id DESC LIMIT 1").bind(id,s.user_id).first();
@@ -376,6 +401,16 @@ async function api(request,env){
       await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(id).run();
       return json({ok:true,message:'Student password updated. Existing student sessions were signed out.'});
     }
+    if(m==='POST'&&p==='/api/admin/promote'){
+      const result=await env.DB.prepare(`SELECT id,grade_level FROM users`).all();
+      const students=result.results||[];
+      const nextGrade=g=>({'Preparatory 1':'Preparatory 2','Preparatory 2':'Preparatory 3','Preparatory 3':'Secondary 1','Secondary 1':'Secondary 2','Secondary 2':'Secondary 3'})[g]||null;
+      const graduating=students.filter(u=>u.grade_level==='Secondary 3');
+      if(graduating.length) await env.DB.batch(graduating.map(u=>env.DB.prepare('DELETE FROM users WHERE id=?').bind(u.id)));
+      const updates=students.filter(u=>nextGrade(u.grade_level)).map(u=>env.DB.prepare(`UPDATE users SET grade_level=?,group_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(nextGrade(u.grade_level),u.id));
+      if(updates.length) await env.DB.batch(updates);
+      return json({ok:true,promoted:updates.length,deletedSecondary3:graduating.length});
+    }
     if(m==='GET'&&p==='/api/admin/groups'){const grade=cleanGrade(url.searchParams.get('grade'));const rows=grade?await env.DB.prepare(`SELECT g.*,COUNT(u.id) student_count FROM groups g LEFT JOIN users u ON u.group_id=g.id WHERE g.grade=? GROUP BY g.id ORDER BY g.name`).bind(grade).all():await env.DB.prepare(`SELECT g.*,COUNT(u.id) student_count FROM groups g LEFT JOIN users u ON u.group_id=g.id GROUP BY g.id ORDER BY g.grade,g.name`).all();return json(rows.results||[])}
     if(m==='POST'&&p==='/api/admin/groups'){const b=await body(request),name=clean(b?.name,100),system=educationSystem(b?.system),grade=cleanGrade(b?.grade);if(!name||!grade)return bad('Group name and grade are required');try{const r=await env.DB.prepare('INSERT INTO groups(name,system,grade) VALUES(?,?,?)').bind(name,system,grade).run();return json({id:r.meta.last_row_id},201)}catch{return bad('This group already exists',409)}}
     if(m==='GET'&&p.match(/^\/api\/admin\/groups\/\d+$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid group');const g=await env.DB.prepare('SELECT * FROM groups WHERE id=?').bind(id).first();if(!g)return bad('Group not found',404);const rows=await env.DB.prepare('SELECT id,student_id,full_name,email,phone,status,grade_level FROM users WHERE group_id=? ORDER BY full_name').bind(id).all();return json({group:g,students:rows.results||[]})}
@@ -390,9 +425,9 @@ async function api(request,env){
       const grade=cleanGrade(url.searchParams.get('grade'));const rows=grade?await env.DB.prepare(`SELECT e.*, (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e WHERE e.grade_level=? ORDER BY e.created_at DESC`).bind(grade).all():await env.DB.prepare(`SELECT e.*, (SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e ORDER BY e.created_at DESC`).all();return json(rows.results||[]);
     }
     if(m==='POST'&&(p==='/api/admin/exams'||p==='/api/admin/exams/')){
-      const b=await body(request),title=clean(b?.title,200),grade=cleanGrade(b?.gradeLevel),duration=Number(b?.durationMinutes),pass=Number(b?.passingPercentage),attachments=normalizeAttachments(b?.attachments),desktopRequired=b?.desktopRequired?1:0,availableFrom=isoOrNull(b?.availableFrom),availabilityHours=b?.availabilityHours===''||b?.availabilityHours==null?null:Number(b?.availabilityHours);if(!title||!grade||!Number.isInteger(duration)||duration<1||duration>600||!Number.isFinite(pass)||pass<0||pass>100)return bad('Invalid exam fields');if(b?.availableFrom&&!availableFrom)return bad('Invalid availability start date');if(availabilityHours!==null&&(!Number.isFinite(availabilityHours)||availabilityHours<1||availabilityHours>720))return bad('Availability window must be between 1 and 720 hours');const expiresAt=availableFrom&&availabilityHours!==null?new Date(Date.parse(availableFrom)+availabilityHours*3600000).toISOString():null;const r=await env.DB.prepare('INSERT INTO exams(title,description,grade_level,duration_minutes,passing_percentage,status,created_by,attachments_json,desktop_required,available_from,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(title,clean(b?.description),grade,duration,pass,b?.status==='active'?'active':'inactive',s.admin_user_id,JSON.stringify(attachments),desktopRequired,availableFrom,expiresAt).run();return json({id:r.meta.last_row_id},201);
+      const b=await body(request),title=clean(b?.title,200),grade=cleanGrade(b?.gradeLevel),duration=Number(b?.durationMinutes),pass=Number(b?.passingPercentage),attachments=normalizeAttachments(b?.attachments),desktopRequired=b?.desktopRequired?1:0,targetSystem=['general','azhar','all'].includes(String(b?.targetSystem||'').toLowerCase())?String(b.targetSystem).toLowerCase():'all',targetType=['all','grade','group'].includes(String(b?.targetType||'').toLowerCase())?String(b.targetType).toLowerCase():'all',targetGrade=cleanGrade(b?.targetGrade||grade),targetGroupId=b?.targetGroupId?idNum(b.targetGroupId):null,availableFrom=isoOrNull(b?.availableFrom),availabilityHours=b?.availabilityHours===''||b?.availabilityHours==null?null:Number(b?.availabilityHours);if(!title||!grade||!Number.isInteger(duration)||duration<1||duration>600||!Number.isFinite(pass)||pass<0||pass>100)return bad('Invalid exam fields');if(b?.availableFrom&&!availableFrom)return bad('Invalid availability start date');if(availabilityHours!==null&&(!Number.isFinite(availabilityHours)||availabilityHours<1||availabilityHours>720))return bad('Availability window must be between 1 and 720 hours');const expiresAt=availableFrom&&availabilityHours!==null?new Date(Date.parse(availableFrom)+availabilityHours*3600000).toISOString():null;const r=await env.DB.prepare('INSERT INTO exams(title,description,grade_level,duration_minutes,passing_percentage,status,created_by,attachments_json,desktop_required,available_from,expires_at,target_type,target_system,target_grade,target_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(title,clean(b?.description),grade,duration,pass,b?.status==='active'?'active':'inactive',s.admin_user_id,JSON.stringify(attachments),desktopRequired,availableFrom,expiresAt,targetType,targetSystem,targetGrade,targetGroupId).run();return json({id:r.meta.last_row_id},201);
     }
-    if(m==='PUT'&&p.match(/^\/api\/admin\/exams\/(\d+)\/?$/)){const id=idNum((p.match(/^\/api\/admin\/exams\/(\d+)/)||[])[1]),b=await body(request),grade=cleanGrade(b?.gradeLevel),duration=Number(b?.durationMinutes),pass=Number(b?.passingPercentage),desktopRequired=b?.desktopRequired?1:0,availableFrom=isoOrNull(b?.availableFrom),availabilityHours=b?.availabilityHours===''||b?.availabilityHours==null?null:Number(b?.availabilityHours);if(!id||!clean(b?.title)||!grade||!Number.isInteger(duration)||duration<1||duration>600||pass<0||pass>100)return bad('Invalid exam fields');if(b?.availableFrom&&!availableFrom)return bad('Invalid availability start date');if(availabilityHours!==null&&(!Number.isFinite(availabilityHours)||availabilityHours<1||availabilityHours>720))return bad('Availability window must be between 1 and 720 hours');const expiresAt=availableFrom&&availabilityHours!==null?new Date(Date.parse(availableFrom)+availabilityHours*3600000).toISOString():null;if(Object.prototype.hasOwnProperty.call(b,'attachments')){const attachments=normalizeAttachments(b.attachments);await env.DB.prepare('UPDATE exams SET title=?,description=?,grade_level=?,duration_minutes=?,passing_percentage=?,status=?,attachments_json=?,desktop_required=?,available_from=?,expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(clean(b.title,200),clean(b.description),grade,duration,pass,b.status==='active'?'active':'inactive',JSON.stringify(attachments),desktopRequired,availableFrom,expiresAt,id).run()}else{await env.DB.prepare('UPDATE exams SET title=?,description=?,grade_level=?,duration_minutes=?,passing_percentage=?,status=?,desktop_required=?,available_from=?,expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(clean(b.title,200),clean(b.description),grade,duration,pass,b.status==='active'?'active':'inactive',desktopRequired,availableFrom,expiresAt,id).run()}return json({ok:true})}
+    if(m==='PUT'&&p.match(/^\/api\/admin\/exams\/(\d+)\/?$/)){const id=idNum((p.match(/^\/api\/admin\/exams\/(\d+)/)||[])[1]),b=await body(request),grade=cleanGrade(b?.gradeLevel),duration=Number(b?.durationMinutes),pass=Number(b?.passingPercentage),desktopRequired=b?.desktopRequired?1:0,targetSystem=['general','azhar','all'].includes(String(b?.targetSystem||'').toLowerCase())?String(b.targetSystem).toLowerCase():'all',targetType=['all','grade','group'].includes(String(b?.targetType||'').toLowerCase())?String(b.targetType).toLowerCase():'all',targetGrade=cleanGrade(b?.targetGrade||grade),targetGroupId=b?.targetGroupId?idNum(b.targetGroupId):null,availableFrom=isoOrNull(b?.availableFrom),availabilityHours=b?.availabilityHours===''||b?.availabilityHours==null?null:Number(b?.availabilityHours);if(!id||!clean(b?.title)||!grade||!Number.isInteger(duration)||duration<1||duration>600||pass<0||pass>100)return bad('Invalid exam fields');if(b?.availableFrom&&!availableFrom)return bad('Invalid availability start date');if(availabilityHours!==null&&(!Number.isFinite(availabilityHours)||availabilityHours<1||availabilityHours>720))return bad('Availability window must be between 1 and 720 hours');const expiresAt=availableFrom&&availabilityHours!==null?new Date(Date.parse(availableFrom)+availabilityHours*3600000).toISOString():null;if(Object.prototype.hasOwnProperty.call(b,'attachments')){const attachments=normalizeAttachments(b.attachments);await env.DB.prepare('UPDATE exams SET title=?,description=?,grade_level=?,duration_minutes=?,passing_percentage=?,status=?,attachments_json=?,desktop_required=?,available_from=?,expires_at=?,target_type=?,target_system=?,target_grade=?,target_group_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(clean(b.title,200),clean(b.description),grade,duration,pass,b.status==='active'?'active':'inactive',JSON.stringify(attachments),desktopRequired,availableFrom,expiresAt,targetType,targetSystem,targetGrade,targetGroupId,id).run()}else{await env.DB.prepare('UPDATE exams SET title=?,description=?,grade_level=?,duration_minutes=?,passing_percentage=?,status=?,desktop_required=?,available_from=?,expires_at=?,target_type=?,target_system=?,target_grade=?,target_group_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(clean(b.title,200),clean(b.description),grade,duration,pass,b.status==='active'?'active':'inactive',desktopRequired,availableFrom,expiresAt,targetType,targetSystem,targetGrade,targetGroupId,id).run()}return json({ok:true})}
     if(m==='DELETE'&&p.match(/^\/api\/admin\/exams\/(\d+)\/?$/)){const id=idNum((p.match(/^\/api\/admin\/exams\/(\d+)/)||[])[1]);if(!id)return bad('Invalid exam');await env.DB.prepare('DELETE FROM exams WHERE id=?').bind(id).run();return json({ok:true})}
     if(m==='GET'&&p.match(/^\/api\/admin\/exams\/\d+\/questions$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid exam');const rows=await env.DB.prepare('SELECT * FROM questions WHERE exam_id=? ORDER BY sort_order,id').bind(id).all();return json((rows.results||[]).map(q=>({...q,attachments:parseAttachments(q.attachments_json)})))}
     if(m==='POST'&&p==='/api/admin/questions/bulk'){
@@ -401,13 +436,15 @@ async function api(request,env){
       const exam=await env.DB.prepare('SELECT id FROM exams WHERE id=?').bind(examId).first();if(!exam)return bad('Exam not found',404);
       const statements=[];
       for(let i=0;i<items.length;i++){
-        const q=items[i]||{},points=Number(q.points??1),sortOrder=Number(q.sortOrder??i+1),correct=String(q.correctAnswer||'').trim().toUpperCase();
+        const q=items[i]||{},points=Number(q.points??1),sortOrder=Number(q.sortOrder??i+1),correct=String(q.correctAnswer||'').trim().toUpperCase(),skillName=clean(q.skill||q.skillName,80),topic=clean(q.topic,120);
         if(!clean(q.questionText)||!clean(q.optionA)||!clean(q.optionB)||!clean(q.optionC)||!clean(q.optionD)||!['A','B','C','D'].includes(correct)||!Number.isFinite(points)||points<=0||!Number.isInteger(sortOrder))return bad(`Invalid question data on row ${i+2}`);
-        statements.push(env.DB.prepare('INSERT INTO questions(exam_id,question_text,option_a,option_b,option_c,option_d,correct_answer,points,sort_order,attachments_json) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(examId,clean(q.questionText),clean(q.optionA),clean(q.optionB),clean(q.optionC),clean(q.optionD),correct,points,sortOrder,'[]'));
+        let skillId=null;if(skillName){const sk=await env.DB.prepare('SELECT id FROM skills WHERE lower(name)=lower(?)').bind(skillName).first();skillId=sk?.id||null;}
+        statements.push(env.DB.prepare('INSERT INTO questions(exam_id,question_text,option_a,option_b,option_c,option_d,correct_answer,points,sort_order,attachments_json,skill_id,topic) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').bind(examId,clean(q.questionText),clean(q.optionA),clean(q.optionB),clean(q.optionC),clean(q.optionD),correct,points,sortOrder,'[]',skillId,topic));
       }
       await env.DB.batch(statements);
       return json({ok:true,inserted:items.length});
     }
+
     if(m==='POST'&&p==='/api/admin/questions'){
       const b=await body(request),examId=idNum(b?.examId),points=Number(b?.points||1),attachments=normalizeAttachments(b?.attachments);if(!examId||!clean(b?.questionText)||!clean(b?.optionA)||!clean(b?.optionB)||!clean(b?.optionC)||!clean(b?.optionD)||!['A','B','C','D'].includes(b?.correctAnswer)||!Number.isFinite(points)||points<=0)return bad('Invalid question fields');const r=await env.DB.prepare('INSERT INTO questions(exam_id,question_text,option_a,option_b,option_c,option_d,correct_answer,points,sort_order,attachments_json,skill_id,topic) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').bind(examId,clean(b.questionText),clean(b.optionA),clean(b.optionB),clean(b.optionC),clean(b.optionD),b.correctAnswer,points,Number(b.sortOrder||0),JSON.stringify(attachments),b.skillId?idNum(b.skillId):null,clean(b.topic,120)).run();return json({id:r.meta.last_row_id},201);
     }
