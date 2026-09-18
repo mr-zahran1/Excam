@@ -231,7 +231,7 @@ async function api(request,env){
     const rows=await env.DB.prepare(`SELECT r.id,r.type,r.title,r.url,r.description,er.sort_order,er.required
       FROM exam_resources er JOIN learning_resources r ON r.id=er.resource_id
       WHERE er.exam_id=? ORDER BY er.sort_order`).bind(id).all();
-    const resources=(rows.results||[]).filter(r=>resourceTargetsStudent(r,u));
+    const resources=(rows.results||[]);
     const openedRows=resources.length?await env.DB.prepare(`SELECT resource_id FROM learning_resource_access WHERE user_id=? AND resource_id IN (${resources.map(()=>'?').join(',')})`).bind(s.user_id,...resources.map(r=>r.id)).all():{results:[]};
     return json({exam:{id:e.id,title:e.title,resourceGate:e.resource_gate||'direct'},resources,opened:(openedRows.results||[]).map(x=>Number(x.resource_id))});
   }
