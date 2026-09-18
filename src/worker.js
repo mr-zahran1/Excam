@@ -31,6 +31,32 @@ function emailOK(v){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)}
 function phoneOK(v){return v===''||/^[+0-9][0-9 ()-]{6,19}$/.test(v)}
 function educationSystem(v){v=String(v||'general').toLowerCase();return v==='azhar'?'azhar':'general'}
 function cleanGrade(v){return clean(v,80)}
+function normalizeStudentGrade(v){
+  const raw=clean(v,80), key=raw.toLowerCase().replace(/[ًٌٍَُِّْـ]/g,'').replace(/[-_]/g,' ').replace(/\s+/g,' ').trim();
+  const map={
+    '1 prep':'Preparatory 1','2 prep':'Preparatory 2','3 prep':'Preparatory 3',
+    'prep 1':'Preparatory 1','prep 2':'Preparatory 2','prep 3':'Preparatory 3',
+    '1 preparatory':'Preparatory 1','2 preparatory':'Preparatory 2','3 preparatory':'Preparatory 3',
+    '1 secondary':'Secondary 1','2 secondary':'Secondary 2','3 secondary':'Secondary 3',
+    'secondary 1':'Secondary 1','secondary 2':'Secondary 2','secondary 3':'Secondary 3',
+    'اولى اعدادي':'Preparatory 1','اولى اعدادى':'Preparatory 1','الأول الإعدادي':'Preparatory 1','الاول الاعدادي':'Preparatory 1',
+    'تانية اعدادي':'Preparatory 2','تانية اعدادى':'Preparatory 2','الثاني الإعدادي':'Preparatory 2','الثاني الاعدادي':'Preparatory 2',
+    'تالتة اعدادي':'Preparatory 3','تالتة اعدادى':'Preparatory 3','الثالث الإعدادي':'Preparatory 3','الثالث الاعدادي':'Preparatory 3',
+    'اولى ثانوي':'Secondary 1','أولى ثانوي':'Secondary 1','الأول الثانوي':'Secondary 1','الاول الثانوي':'Secondary 1',
+    'تانية ثانوي':'Secondary 2','ثانية ثانوي':'Secondary 2','الثاني الثانوي':'Secondary 2',
+    'تالتة ثانوي':'Secondary 3','ثالثة ثانوي':'Secondary 3','الثالث الثانوي':'Secondary 3'
+  };
+  return map[key]||raw;
+}
+function resolveStudentGroup(groupValue,grade,system,env){
+  const raw=clean(groupValue,80); if(!raw) return Promise.resolve(null);
+  const code=system==='azhar' ? (raw.toUpperCase().endsWith('A')?raw.toUpperCase():raw+'A') : raw;
+  return (async()=>{
+    let g=await env.DB.prepare('SELECT id,name,grade,system FROM groups WHERE lower(name)=lower(?) AND grade=? AND system=?').bind(code,grade,system).first();
+    if(!g && /^\d+$/.test(raw)) g=await env.DB.prepare('SELECT id,name,grade,system FROM groups WHERE id=? AND grade=? AND system=?').bind(Number(raw),grade,system).first();
+    return g;
+  })();
+}
 function now(){return Math.floor(Date.now()/1000)}
 function isoOrNull(v){if(v===null||v===undefined||String(v).trim()==='')return null;const t=Date.parse(String(v));return Number.isFinite(t)?new Date(t).toISOString():null}
 function availabilityState(startAt,expiresAt){const t=Date.now();const s=startAt?Date.parse(startAt):NaN,e=expiresAt?Date.parse(expiresAt):NaN;if(Number.isFinite(e)&&t>=e)return 'expired';if(Number.isFinite(s)&&t<s)return 'scheduled';return 'open'}
@@ -460,9 +486,9 @@ async function api(request,env){
     if(m==='POST'&&p==='/api/admin/students/import'){
       const b=await body(request),items=Array.isArray(b?.students)?b.students:[];if(!items.length)return bad('No students were provided');if(items.length>500)return bad('Maximum 500 students per import');
       const created=[],errors=[];
-      for(let i=0;i<items.length;i++){const x=items[i]||{},name=clean(x.fullName,120),email=clean(x.email,160).toLowerCase(),phone=clean(x.phone,30),parentPhone=clean(x.parentPhone,30),system=educationSystem(x.educationSystem),grade=cleanGrade(x.grade),groupId=x.groupId?idNum(x.groupId):null;let password=String(x.password||'');if(!password)password=`Stu@${randomHex(5).slice(0,8)}`;
+      for(let i=0;i<items.length;i++){const x=items[i]||{},name=clean(x.fullName,120),email=clean(x.email,160).toLowerCase(),phone=clean(x.phone,30),parentPhone=clean(x.parentPhone,30),system=educationSystem(x.educationSystem),grade=normalizeStudentGrade(x.grade),groupValue=clean(x.groupId,80);let password=String(x.password||'');if(!password)password=`Stu@${randomHex(5).slice(0,8)}`;
         if(!name||!emailOK(email)||!phoneOK(phone)||!phoneOK(parentPhone)||!grade||!passwordOK(password)){errors.push({row:i+2,error:'Name, valid email, valid phones, grade and password (8+ chars) are required'});continue}
-        if(groupId){const g=await env.DB.prepare('SELECT id,grade FROM groups WHERE id=?').bind(groupId).first();if(!g||g.grade!==grade){errors.push({row:i+2,error:'Group not found or grade does not match'});continue}}
+        const group=groupValue?await resolveStudentGroup(groupValue,grade,system,env):null;const groupId=group?Number(group.id):null;if(groupValue&&!group){errors.push({row:i+2,error:`Group '${groupValue}' not found for ${system==='azhar'?'Azhar':'General'} · ${grade}`});continue}
         if(await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first()){errors.push({row:i+2,email,error:'Email already exists'});continue}
         let studentId=null;for(let j=0;j<10;j++){const candidate=`STU-${randomHex(5).slice(0,8).toUpperCase()}`;if(!await env.DB.prepare('SELECT id FROM users WHERE student_id=?').bind(candidate).first()){studentId=candidate;break}}
         if(!studentId){errors.push({row:i+2,error:'Could not generate Student ID'});continue}
