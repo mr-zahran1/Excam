@@ -234,15 +234,15 @@ async function api(request,env){
       const u=await env.DB.prepare('SELECT education_system,grade_level,group_id FROM users WHERE id=?').bind(s.user_id).first();
       if(!u)return bad('Student not found',404);
       sql+=` WHERE e.status='active'
+        AND NOT EXISTS (SELECT 1 FROM results pr WHERE pr.exam_id=e.id AND pr.user_id=? AND pr.passed=1)
         AND (e.available_from IS NULL OR e.available_from<=datetime('now'))
         AND (e.expires_at IS NULL OR e.expires_at>datetime('now'))
         AND (e.grade_level='' OR e.grade_level=?)
         AND (COALESCE(NULLIF(e.target_system,''),'all')='all' OR e.target_system=?)
         AND (COALESCE(NULLIF(e.target_type,''),'all')='all'
           OR (e.target_type='grade' AND (e.target_grade=? OR e.grade_level=?))
-          OR (e.target_type='group' AND e.target_group_id=?))
-        AND NOT EXISTS (SELECT 1 FROM results pr WHERE pr.exam_id=e.id AND pr.user_id=? AND pr.passed=1)`;
-      params.push(u.grade_level||'',u.education_system||'general',u.grade_level||'',u.grade_level||'',u.group_id||0,s.user_id);
+          OR (e.target_type='group' AND e.target_group_id=?))`;
+      params.push(s.user_id,u.grade_level||'',u.education_system||'general',u.grade_level||'',u.grade_level||'',u.group_id||0);
     }
     sql+=` ORDER BY COALESCE(e.available_from,e.created_at) DESC,e.created_at DESC`;
     const rows=await env.DB.prepare(sql).bind(...params).all();
