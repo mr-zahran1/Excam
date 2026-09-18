@@ -232,7 +232,7 @@ html,body{max-width:100%;overflow-x:hidden}
   body.mobile-menu-open{overflow:hidden}
   body.mobile-menu-open .mobile-menu{transform:translateX(0)}
   body.mobile-menu-open .mobile-menu-backdrop{opacity:1;pointer-events:auto}
-  .install-app-btn{display:none!important}.pwa-installable .install-app-btn{display:block!important}
+  .install-app-btn{display:block!important}.install-platform-btn{display:inline-flex!important;align-items:center;gap:6px}.install-platform-btn{border:1px solid rgba(37,99,235,.22)}
   .page{width:auto;max-width:100%;margin:0;padding-left:14px;padding-right:14px;box-sizing:border-box}
   .student-home{padding-left:14px;padding-right:14px}
   .card,.welcome-copy,.teacher-hero,.public-teacher,.public-hero,.result-shell{max-width:100%;box-sizing:border-box}

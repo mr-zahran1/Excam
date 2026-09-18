@@ -2,8 +2,8 @@
   "name": "Exam Platform Admin",
   "short_name": "Exam Admin",
   "description": "Administration portal for the exam platform.",
-  "start_url": "/admin",
-  "scope": "/",
+  "start_url": "/admin/",
+  "scope": "/admin/",
   "display": "standalone",
   "display_override": [
     "window-controls-overlay",
