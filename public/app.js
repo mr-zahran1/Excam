@@ -1,6 +1,6 @@
 const app=document.getElementById('app'),toast=document.getElementById('toast');
 let deferredInstallPrompt=null;
-if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));}
+if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())).catch(()=>{}));}
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;document.documentElement.classList.add('pwa-installable');});
 window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null;document.documentElement.classList.remove('pwa-installable');});
 const isAdminPortal=()=>location.pathname==='/admin'||location.pathname==='/admin/'||location.pathname==='/admin.html';

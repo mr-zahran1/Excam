@@ -1,91 +1,28 @@
-const CACHE = 'exam-platform-v3';
-
-const APP_SHELL = [
-  '/',
-  '/index.html',
-  '/admin.html',
-  '/styles.css',
-  '/app.js',
-  '/manifest.webmanifest',
-  '/admin-manifest.webmanifest',
-  '/teacher.png',
-  '/ae-logo.png',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png'
-];
+const CACHE = 'exam-platform-v4';
 
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE)
-      .then(cache => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys()
-      .then(keys =>
-        Promise.all(
-          keys
-            .filter(key => key !== CACHE)
-            .map(key => caches.delete(key))
-        )
-      )
+      .then(keys => Promise.all(keys.map(key => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
 
+// Network-only service worker. No Response cloning or caching.
 self.addEventListener('fetch', event => {
   const req = event.request;
   const url = new URL(req.url);
 
-  if (
-    req.method !== 'GET' ||
-    url.origin !== self.location.origin ||
-    url.pathname.startsWith('/api/')
-  ) {
-    return;
-  }
-
-  if (req.mode === 'navigate') {
-    event.respondWith(
-      fetch(req)
-        .then(res => {
-          const copy = res.clone();
-
-          event.waitUntil(
-            caches.open(CACHE)
-              .then(cache => cache.put('/index.html', copy))
-          );
-
-          return res;
-        })
-        .catch(() => caches.match('/index.html'))
-    );
-
-    return;
-  }
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
 
   event.respondWith(
-    caches.match(req)
-      .then(cached => {
-        if (cached) return cached;
-
-        return fetch(req)
-          .then(res => {
-            if (!res.ok) return res;
-
-            const copy = res.clone();
-
-            event.waitUntil(
-              caches.open(CACHE)
-                .then(cache => cache.put(req, copy))
-            );
-
-            return res;
-          });
-      })
-      .catch(() => caches.match('/index.html'))
+    fetch(req).catch(() => {
+      if (req.mode === 'navigate') return caches.match('/index.html');
+      return new Response('', { status: 503, statusText: 'Offline' });
+    })
   );
 });
