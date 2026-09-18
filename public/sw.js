@@ -1,10 +1,12 @@
-const CACHE = 'exam-platform-v1';
+const CACHE = 'exam-platform-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
+  '/admin.html',
   '/styles.css',
   '/app.js',
   '/manifest.webmanifest',
+  '/admin-manifest.webmanifest',
   '/teacher.png',
   '/ae-logo.png',
   '/icons/icon-192.png',

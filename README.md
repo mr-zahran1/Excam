@@ -174,3 +174,20 @@ Do not commit the real D1 database ID or any bootstrap secret to a public reposi
 - Migration `0015_exam_targeting.sql` must be applied to the D1 database before deploying this version.
 - Migration `0016_learning_resources.sql` adds the optional Video/PDF learning path and resource-open tracking.
 - Exam submission now writes answer rows through a D1 batch, reducing database round trips when many students submit at the same time.
+
+## Student credential emails
+
+The Admin student import now includes a **Send login details by email** button. New students created manually are also emailed automatically after creation.
+
+Email delivery uses Resend from the Cloudflare Worker. Configure:
+
+```bash
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put RESEND_FROM_EMAIL
+```
+
+`RESEND_FROM_EMAIL` should be a verified sender/domain in Resend, for example `Excam <no-reply@yourdomain.com>`.
+
+
+## Free Gmail email sending
+For student credential emails without Resend, use the Google Apps Script relay in `gmail-relay/README.md`. It sends from your normal Gmail account.

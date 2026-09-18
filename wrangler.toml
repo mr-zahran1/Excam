@@ -14,3 +14,4 @@ migrations_dir = "migrations"
 
 [vars]
 SESSION_DAYS = "7"
+# Set GMAIL_APPS_SCRIPT_URL and GMAIL_APPS_SCRIPT_TOKEN with `wrangler secret put`.

@@ -58,6 +58,23 @@ function resolveStudentGroup(groupValue,grade,system,env){
   })();
 }
 function now(){return Math.floor(Date.now()/1000)}
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function studentCredentialsEmail(student,origin){
+  const name=escapeHtml(student.name),phone=escapeHtml(student.phone||'Not provided'),id=escapeHtml(student.studentId),password=escapeHtml(student.password),loginUrl=`${origin}/`;
+  return {subject:'Your Excam Student Account Details',html:`<!doctype html><html><body style="margin:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#172033"><div style="max-width:640px;margin:32px auto;padding:0 16px"><div style="background:#102a56;border-radius:20px 20px 0 0;padding:28px 32px;color:#fff"><div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;opacity:.8">Excam</div><h1 style="margin:10px 0 0;font-size:28px">Your student account is ready</h1></div><div style="background:#fff;padding:32px;border-radius:0 0 20px 20px;box-shadow:0 8px 30px rgba(16,42,86,.08)"><p style="font-size:17px;margin-top:0">Hello <strong>${name}</strong>,</p><p style="line-height:1.7;color:#5d687c">Your Excam student account has been created. Please keep the following login details private and use them to access your exams.</p><div style="margin:24px 0;padding:20px;background:#f7f9fc;border:1px solid #e4e9f1;border-radius:14px"><div style="margin-bottom:14px"><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Name</span><strong style="font-size:17px">${name}</strong></div><div style="margin-bottom:14px"><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Phone</span><strong style="font-size:17px">${phone}</strong></div><div style="margin-bottom:14px"><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Student ID</span><strong style="font-size:19px;letter-spacing:1px">${id}</strong></div><div><span style="display:block;color:#7a8495;font-size:12px;text-transform:uppercase;letter-spacing:1px">Password</span><strong style="font-size:19px;letter-spacing:1px">${password}</strong></div></div><a href="${loginUrl}" style="display:inline-block;background:#f28c28;color:#fff;text-decoration:none;padding:13px 22px;border-radius:10px;font-weight:700">Open Excam</a><p style="margin:24px 0 0;color:#7a8495;font-size:13px;line-height:1.6">For your security, do not share your Student ID or password with anyone.</p></div><p style="text-align:center;color:#98a1af;font-size:12px;padding:16px 0">Excam · Student Portal</p></div></body></html>`,text:`Hello ${student.name},\n\nYour Excam student account is ready.\n\nName: ${student.name}\nPhone: ${student.phone||'Not provided'}\nStudent ID: ${student.studentId}\nPassword: ${student.password}\n\nOpen Excam: ${loginUrl}\n\nPlease keep your login details private.`};
+}
+async function sendCredentialEmails(env,students,origin){
+  const endpoint=String(env.GMAIL_APPS_SCRIPT_URL||'').trim(),token=String(env.GMAIL_APPS_SCRIPT_TOKEN||'').trim();
+  if(!endpoint||!token)throw new Error('Gmail email service is not configured. Set GMAIL_APPS_SCRIPT_URL and GMAIL_APPS_SCRIPT_TOKEN.');
+  const valid=students.filter(x=>x&&emailOK(String(x.email||''))).slice(0,100).map(x=>{const e=studentCredentialsEmail(x,origin);return {...x,subject:e.subject,html:e.html,text:e.text}});
+  if(!valid.length)return [];
+  const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,students:valid})});
+  const raw=await r.text();
+  let data={};try{data=JSON.parse(raw)}catch{}
+  if(!r.ok||!data.ok)throw new Error(data.error||`Gmail service error: ${r.status}`);
+  return data.sent||[];
+}
+
 function isoOrNull(v){if(v===null||v===undefined||String(v).trim()==='')return null;const t=Date.parse(String(v));return Number.isFinite(t)?new Date(t).toISOString():null}
 function availabilityState(startAt,expiresAt){const t=Date.now();const s=startAt?Date.parse(startAt):NaN,e=expiresAt?Date.parse(expiresAt):NaN;if(Number.isFinite(e)&&t>=e)return 'expired';if(Number.isFinite(s)&&t<s)return 'scheduled';return 'open'}
 async function hashPassword(password,saltB64){
@@ -484,6 +501,13 @@ async function api(request,env){
       const ph=await hashPassword(password);const r=await env.DB.prepare('INSERT INTO users(student_id,full_name,email,phone,parent_phone,password_hash,password_salt,education_system,grade_level,group_id) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(studentId,name,email,phone,parentPhone,ph.hash,ph.salt,system,grade,groupId).run();return json({ok:true,id:r.meta.last_row_id,studentId},201);
     }
     if(m==='GET'&&p.match(/^\/api\/admin\/students\/\d+$/)){const id=idNum(p.split('/')[4]);if(!id)return bad('Invalid student');const u=await env.DB.prepare('SELECT u.id,u.student_id,u.full_name,u.email,u.phone,u.parent_phone,u.status,u.education_system,u.grade_level,u.group_id,u.created_at,g.name group_name FROM users u LEFT JOIN groups g ON g.id=u.group_id WHERE u.id=?').bind(id).first();if(!u)return bad('Student not found',404);const results=await env.DB.prepare('SELECT r.*,e.title FROM results r JOIN exams e ON e.id=r.exam_id WHERE r.user_id=? ORDER BY r.created_at DESC').bind(id).all();const skills=await env.DB.prepare(`SELECT COALESCE(s.name,'Uncategorized') skill,ROUND(100.0*SUM(a.points_earned)/NULLIF(SUM(q.points),0),1) percentage,COUNT(*) questions FROM answers a JOIN questions q ON q.id=a.question_id LEFT JOIN skills s ON s.id=q.skill_id JOIN exam_attempts ea ON ea.id=a.attempt_id WHERE ea.user_id=? GROUP BY q.skill_id ORDER BY percentage ASC`).bind(id).all();const link=await env.DB.prepare('SELECT token FROM student_followup_links WHERE student_id=?').bind(id).first();return json({student:u,results:results.results||[],skills:skills.results||[],followupUrl:link?`${url.origin}/followup?token=${encodeURIComponent(link.token)}`:''})}
+    if(m==='POST'&&p==='/api/admin/students/send-credentials'){
+      const b=await body(request),students=Array.isArray(b?.students)?b.students:[];
+      if(!students.length)return bad('No students were provided');
+      if(students.length>500)return bad('Maximum 500 emails per request');
+      try{const sent=await sendCredentialEmails(env,students,url.origin);return json({ok:true,sentCount:sent.length,sent})}
+      catch(err){return bad(err?.message||'Could not send emails',502)}
+    }
     if(m==='POST'&&p==='/api/admin/students/import'){
       const b=await body(request),items=Array.isArray(b?.students)?b.students:[];if(!items.length)return bad('No students were provided');if(items.length>500)return bad('Maximum 500 students per import');
       const created=[],errors=[];
