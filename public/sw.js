@@ -48,7 +48,6 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Navigation: network first, cached fallback
   if (req.mode === 'navigate') {
     event.respondWith(
       fetch(req)
@@ -68,19 +67,14 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Other assets: cache first, network fallback
   event.respondWith(
     caches.match(req)
       .then(cached => {
-        if (cached) {
-          return cached;
-        }
+        if (cached) return cached;
 
         return fetch(req)
           .then(res => {
-            if (!res.ok) {
-              return res;
-            }
+            if (!res.ok) return res;
 
             const copy = res.clone();
 
